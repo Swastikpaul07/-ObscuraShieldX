@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ShieldX — Intelligent Document Screening</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="shell">
+  <nav>
+    <div class="brand"><span class="shield">◈</span> SHIELD<span>X</span></div>
+    <div class="nav-status"><i></i> SYSTEM ONLINE</div>
+  </nav>
+
+  <header class="hero">
+    <div>
+      <p class="eyebrow">AI-ASSISTED IDENTITY SCREENING</p>
+      <h1>Verify documents.<br><span>Explain risk.</span></h1>
+      <p class="lead">ShieldX combines document analysis, OCR, anomaly detection and optional face verification into one explainable screening workflow.</p>
+      <div class="hero-pills"><span>OCR</span><span>VISION</span><span>RISK ENGINE</span><span>AUDIT READY</span></div>
+    </div>
+    <div class="hero-card">
+      <div class="orb">🛡</div>
+      <strong>SHIELDX ENGINE</strong>
+      <small>Multi-signal verification pipeline</small>
+    </div>
+  </header>
+
+  <section class="stats" id="stats">
+    <div><small>TOTAL SCREENINGS</small><b id="total">0</b></div>
+    <div><small>LOW RISK</small><b id="low">0</b></div>
+    <div><small>REVIEW REQUIRED</small><b id="review">0</b></div>
+    <div><small>HIGH RISK</small><b id="high">0</b></div>
+  </section>
+
+  <main class="grid">
+    <section class="panel upload-panel">
+      <div class="panel-head"><div><small>01 / INPUT</small><h2>Start Screening</h2></div><span class="tag">LIVE</span></div>
+
+      <label class="drop" id="drop">
+        <input id="document" type="file" accept=".jpg,.jpeg,.png,.pdf">
+        <div class="drop-icon">↑</div>
+        <strong id="drop-title">Drop identity document here</strong>
+        <span id="drop-sub">JPG, PNG or PDF · max 10 MB</span>
+      </label>
+
+      <label class="field-label">Optional selfie for face verification</label>
+      <input id="selfie" class="file-input" type="file" accept=".jpg,.jpeg,.png">
+
+      <div id="preview" class="preview"></div>
+
+      <div class="actions">
+        <button id="analyze" class="primary">ANALYZE DOCUMENT <span>→</span></button>
+        <button id="reset" class="secondary">RESET</button>
+      </div>
+      <div id="loading" class="loading hidden"><div class="spinner"></div><div><b>Running ShieldX pipeline</b><small>OCR → anomaly analysis → face verification → risk scoring</small></div></div>
+      <div id="error" class="error hidden"></div>
+    </section>
+
+    <section class="panel result-panel" id="result-panel">
+      <div class="panel-head"><div><small>02 / DECISION SUPPORT</small><h2>Screening Result</h2></div><span class="tag" id="result-tag">WAITING</span></div>
+      <div id="empty" class="empty"><div>◌</div><h3>Awaiting document</h3><p>Upload an identity document and run analysis to see the explainable risk assessment.</p></div>
+      <div id="result" class="hidden">
+        <div class="score-row">
+          <div class="score-ring"><b id="score">--</b><small>/100</small></div>
+          <div><p class="eyebrow">RISK CLASSIFICATION</p><h2 id="classification">—</h2><p id="request" class="muted"></p></div>
+        </div>
+        <div class="checks" id="checks"></div>
+        <div class="reasons"><h3>Why was this flagged?</h3><ul id="reasons"></ul></div>
+        <details><summary>Extracted document data</summary><pre id="fields"></pre></details>
+      </div>
+    </section>
+  </main>
+
+  <section class="panel history">
+    <div class="panel-head"><div><small>03 / AUDIT TRAIL</small><h2>Recent Screenings</h2></div><button class="secondary" id="refresh">REFRESH</button></div>
+    <div class="table-wrap"><table><thead><tr><th>Request</th><th>Document</th><th>Risk</th><th>Classification</th><th>Time</th></tr></thead><tbody id="history"><tr><td colspan="5" class="muted">No screenings yet.</td></tr></tbody></table></div>
+  </section>
+
+  <footer>ShieldX Prototype · Hackathon demonstration only · Not legally authoritative identity verification.</footer>
+</div>
+<script src="/script.js"></script>
+</body>
+</html>

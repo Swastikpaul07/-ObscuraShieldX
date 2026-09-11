@@ -1,0 +1,14 @@
+services:
+  shieldx:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: sqlite:////app/shieldx.db
+    volumes:
+      - shieldx_data:/app
+
+volumes:
+  shieldx_data:
