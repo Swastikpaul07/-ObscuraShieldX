@@ -14,6 +14,7 @@ class Screening(Base):
     filename: Mapped[str] = mapped_column(String(255))
     risk_score: Mapped[int] = mapped_column(Integer)
     classification: Mapped[str] = mapped_column(String(32))
+    document_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ocr_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     face_similarity: Mapped[float | None] = mapped_column(Float, nullable=True)
     anomaly_score: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -22,7 +23,6 @@ class Screening(Base):
     flags: Mapped[list["RiskFlag"]] = relationship(
         back_populates="screening", cascade="all, delete-orphan"
     )
-
 class RiskFlag(Base):
     __tablename__ = "risk_flags"
 

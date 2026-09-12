@@ -3,6 +3,8 @@ import re
 import cv2
 import numpy as np
 from PIL import Image
+from .paddle_ocr_service import run_paddle_ocr
+from .sarvam_service import run_sarvam_digitise
 
 try:
     import pytesseract
@@ -202,12 +204,6 @@ def extract_date_of_birth(text):
 
 
 def extract_address(lines):
-    """
-    Extract an address from an ID-style document.
-
-    Looks for an explicit Address label first.
-    Otherwise uses an India/location-style line as a fallback.
-    """
     for index, line in enumerate(lines):
         clean = line.strip()
 
@@ -227,27 +223,39 @@ def extract_address(lines):
             if candidate:
                 return candidate
 
-            # Address may be on the next line.
             if index + 1 < len(lines):
                 next_line = lines[index + 1].strip()
 
                 if next_line:
                     return next_line
 
-    # Fallback for the test document.
-    # Detect an India/location-style line.
+    location_patterns = [
+        r"\b[A-Za-z]+,\s*[A-Za-z]+,\s*India\b",
+        r"\b[A-Za-z]+,\s*[A-Za-z]+\s+India\b",
+        r"\b[A-Za-z]+,\s*India\b",
+    ]
+
     for line in lines:
         clean = line.strip()
 
         if not clean:
             continue
 
-        if re.search(r"\bIndia\b", clean, re.IGNORECASE):
-            return clean
+        if clean.lower() == "government of india":
+            continue
+
+        for pattern in location_patterns:
+            match = re.search(
+                pattern,
+                clean,
+                re.IGNORECASE,
+            )
+
+            if match:
+                return match.group(0)
 
     return None
-
-
+  
 def extract_fields_from_text(text):
     """
     Extract structured fields from OCR text.
@@ -286,20 +294,34 @@ def extract_fields_from_text(text):
 
 
 def ocr_image(img_cv, source_path=None):
-    """
-    Run Tesseract OCR while preserving line structure.
+    """Run PaddleOCR first, with Tesseract as fallback."""
 
-    Returns:
-        text            -> raw OCR text
-        fields          -> structured document fields
-        avg_confidence  -> average OCR confidence
-    """
+    # Try PaddleOCR first.
+    if source_path:
+        paddle_result = run_paddle_ocr(source_path)
+
+        if paddle_result.get("success"):
+            text = paddle_result.get("text", "")
+            fields = extract_fields_from_text(text)
+
+            return {
+                "text": text,
+                "fields": fields,
+                "avg_confidence": paddle_result.get("average_confidence"),
+                "error": None,
+                "engine": "paddleocr",
+                "lines": paddle_result.get("lines", []),
+            }
+
+    # Fall back to Tesseract if PaddleOCR fails.
     if not TESSERACT_AVAILABLE:
         return {
             "text": "",
             "fields": {},
             "avg_confidence": None,
-            "error": "Tesseract is not installed.",
+            "error": "PaddleOCR failed and Tesseract is not installed.",
+            "engine": "none",
+            "lines": [],
         }
 
     try:
@@ -310,65 +332,43 @@ def ocr_image(img_cv, source_path=None):
             output_type=Output.DICT,
         )
 
-        texts = []
         confidences = []
-
-        # Keep the OCR line structure.
         line_words = {}
 
         for i, (text_value, conf) in enumerate(
-            zip(
-                data.get("text", []),
-                data.get("conf", []),
-            )
+            zip(data.get("text", []), data.get("conf", []))
         ):
             text_value = text_value.strip()
 
             if not text_value:
                 continue
 
-            texts.append(text_value)
-
-            # Confidence
             try:
                 confidence = float(conf)
 
                 if confidence >= 0:
-                    confidence = max(
-                        0.0,
-                        min(100.0, confidence),
+                    confidences.append(
+                        max(0.0, min(100.0, confidence)) / 100.0
                     )
-
-                    confidences.append(confidence / 100.0)
-
             except (ValueError, TypeError):
                 pass
 
-            # Build a unique key for each OCR line.
             block_num = data.get("block_num", [0])[i]
             par_num = data.get("par_num", [0])[i]
             line_num = data.get("line_num", [0])[i]
 
-            line_key = (
-                block_num,
-                par_num,
-                line_num,
-            )
+            line_key = (block_num, par_num, line_num)
 
             line_words.setdefault(line_key, [])
             line_words[line_key].append(text_value)
 
-        # Convert the grouped words back into lines.
         lines = [
             " ".join(words)
             for words in line_words.values()
             if words
         ]
 
-        # Raw OCR text is kept internally.
         full_text = "\n".join(lines)
-
-        # Structured fields are extracted separately.
         fields = extract_fields_from_text(full_text)
 
         return {
@@ -379,6 +379,9 @@ def ocr_image(img_cv, source_path=None):
                 if confidences
                 else None
             ),
+            "error": None,
+            "engine": "tesseract",
+            "lines": lines,
         }
 
     except Exception as exc:
@@ -387,4 +390,76 @@ def ocr_image(img_cv, source_path=None):
             "fields": {},
             "avg_confidence": None,
             "error": str(exc),
+            "engine": "none",
+            "lines": [],
         }
+def hybrid_ocr(img_cv, source_path=None):
+    local_result = ocr_image(
+        img_cv,
+        source_path=source_path,
+    )
+
+    sarvam_result = {
+        "success": False,
+        "text": "",
+        "blocks": [],
+        "pages": [],
+        "job_id": None,
+        "error": "Source path not provided.",
+    }
+
+    if source_path:
+        sarvam_result = run_sarvam_digitise(
+            source_path
+        )
+
+    if sarvam_result.get("success"):
+        sarvam_text = sarvam_result.get("text", "")
+
+        sarvam_fields = extract_fields_from_text(
+            sarvam_text
+        )
+
+        combined_fields = dict(
+            local_result.get("fields", {})
+        )
+
+        for key, value in sarvam_fields.items():
+            if value:
+                combined_fields[key] = value
+
+        return {
+            "text": sarvam_text,
+            "fields": combined_fields,
+            "avg_confidence": local_result.get(
+                "avg_confidence"
+            ),
+            "error": None,
+            "engine": "hybrid",
+            "local_engine": local_result.get(
+                "engine"
+            ),
+            "local_text": local_result.get(
+                "text", ""
+            ),
+            "sarvam_text": sarvam_text,
+            "sarvam_blocks": sarvam_result.get(
+                "blocks", []
+            ),
+            "sarvam_job_id": sarvam_result.get(
+                "job_id"
+            ),
+        }
+
+    return {
+        **local_result,
+        "engine": "hybrid_local_fallback",
+        "sarvam_text": "",
+        "sarvam_blocks": [],
+        "sarvam_job_id": sarvam_result.get(
+            "job_id"
+        ),
+        "sarvam_error": sarvam_result.get(
+            "error"
+        ),
+    }

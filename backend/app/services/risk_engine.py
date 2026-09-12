@@ -12,10 +12,22 @@ def score(ocr_confidence, anomaly_score, face_similarity):
 
     if face_similarity is not None:
         face = max(0, min(1, face_similarity))
-        risk += (1-face) * 15
-        if face < 0.6:
-            reasons.append(f"Low face similarity ({face:.2f}).")
 
+    if face < 0.4:
+        risk += 50
+        reasons.append(
+            f"Very low face similarity ({face:.2f})."
+        )
+    elif face < 0.6:
+        risk += 30
+        reasons.append(
+            f"Low face similarity ({face:.2f})."
+        )
+    elif face < 0.75:
+        risk += 15
+        reasons.append(
+            f"Moderate face similarity ({face:.2f})."
+        )
     value = int(max(0, min(100, risk)))
     classification = "LOW_RISK" if value <= 30 else "REVIEW_REQUIRED" if value <= 70 else "HIGH_RISK"
     return {

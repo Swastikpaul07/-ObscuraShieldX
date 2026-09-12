@@ -11,7 +11,14 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import Screening, RiskFlag
 from ..schemas.schemas import VerificationResponse, HistoryItem
-from ..services import preprocess, ocr_service, anomaly_service, face_service, risk_engine
+from ..services import (
+    preprocess,
+    ocr_service,
+    anomaly_service,
+    face_service,
+    risk_engine,
+    hash_service,
+)
 from ..utils.file_utils import allowed_file, save_upload_file_tmp
 
 router = APIRouter()
@@ -53,13 +60,16 @@ async def verify_document(
             selfie_path = await save_upload_file_tmp(selfie, str(temp_dir))
 
         # PDF support: convert first page when possible.
+        document_hash = hash_service.calculate_sha256(doc_path)
+
         process_path = doc_path
         if Path(doc_path).suffix.lower() == ".pdf":
             process_path = preprocess.pdf_first_page(doc_path)
 
         prepped_doc = preprocess.preprocess_document(process_path)
-        ocr_result = ocr_service.ocr_image(
-            prepped_doc["image"], source_path=doc_path
+        ocr_result = ocr_service.hybrid_ocr(
+            prepped_doc["image"],
+             source_path=doc_path,
         )
         anomalies = anomaly_service.analyze_document(
             prepped_doc["image"], source_path=doc_path
@@ -105,6 +115,7 @@ async def verify_document(
             filename=document.filename,
             risk_score=risk["risk_score"],
             classification=risk["classification"],
+            document_hash=document_hash,
             ocr_confidence=ocr_result.get("avg_confidence"),
             face_similarity=face_result.get("similarity"),
             anomaly_score=anomalies.get("anomaly_score"),
