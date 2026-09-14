@@ -464,7 +464,7 @@ const FACTOR_DEFS = [
   { key:'tamper',    name:'Document Tamper Score',        weight:25 },
   { key:'ocr',       name:'OCR Data Consistency',         weight:10 },
   { key:'identity',  name:'Cross-Document Identity Match', weight:20 },
-  { key:'crossDoc',  name:'Cross-Document Verification',  weight:15 },
+  { key:'voice',     name:'Voice Authenticity',           weight:15 },
   { key:'source',    name:'Authorized Source Verification',weight:20 },
   { key:'liveness',  name:'Selfie / Liveness Match',       weight:10 },
 ];
@@ -544,42 +544,21 @@ function runIdentityMatch(seed){
     ],
   };
 }
-function runCrossDocumentVerification(seed, docs){
-  const rng = rngFor(seed+'|cross-document');
-
-  const hasSupportingDocument =
-  docs && docs.some(doc => doc.type === 'Supporting Document');
-
-  if(!hasSupportingDocument){
-    return {
-      provided:false,
-      score:null,
-      classification:'Not Submitted',
-      flags:[]
-    };
+function runVoiceAnalysis(seed, hasVoice){
+  const rng = rngFor(seed+'|voice');
+  if(!hasVoice){
+    return { provided:false, score:null, classification:'Not Submitted', flags:[] };
   }
-
-  const checks = [
-    { name:'Name consistency across documents', pass:rng() > 0.12 },
-    { name:'Date of birth consistency', pass:rng() > 0.10 },
-    { name:'Document number linkage', pass:rng() > 0.14 },
-    { name:'Address consistency', pass:rng() > 0.18 },
+  const synthRisk = rng();
+  const score = clamp(Math.round(100-synthRisk*100),0,100);
+  const classification = score>=70 ? 'Human (Live)' : score>=40 ? 'Uncertain' : 'Likely Synthetic';
+  const flags = [
+    { name:'Spectral artifact detection', pass: rng() > synthRisk*0.9 },
+    { name:'Natural cadence & pitch variance', pass: rng() > synthRisk*0.85 },
+    { name:'Background acoustic consistency', pass: rng() > synthRisk*0.8 },
+    { name:'Liveness challenge response', pass: rng() > synthRisk },
   ];
-
-  const passed = checks.filter(check => check.pass).length;
-  const score = Math.round((passed / checks.length) * 100);
-
-  const classification =
-    score >= 75 ? 'Verified' :
-    score >= 50 ? 'Review Required' :
-    'Mismatch Detected';
-
-  return {
-    provided:true,
-    score,
-    classification,
-    flags:checks
-  };
+  return { provided:true, score, classification, flags };
 }
 function runSourceVerification(seed){
   const rng = rngFor(seed+'|source');
@@ -595,20 +574,20 @@ function runLiveness(seed){
   return { score, passed: score>=60 };
 }
 
-function computeRiskFusion({ tamper, identity, crossDoc, source, liveness, ocrAvg }){
+function computeRiskFusion({ tamper, identity, voice, source, liveness, ocrAvg }){
   const sourceRiskPct = (()=>{
     const bad = source.filter(s=>s.status!=='Verified').length;
     return clamp((bad/source.length)*100, 0, 100);
   })();
   const ocrRiskPct = clamp(100-ocrAvg, 0, 100);
-  const crossDocRiskPct = crossDoc.provided ? (100-crossDoc.score) : 45; // neutral-ish penalty if not submitted// neutral-ish penalty if not submitted// neutral-ish penalty if not submitted
+  const voiceRiskPct = voice.provided ? (100-voice.score) : 45; // neutral-ish penalty if not submitted
   const identityRiskPct = 100-identity.score;
   const livenessRiskPct = 100-liveness.score;
   const tamperRiskPct = tamper.score;
 
   const raw = {
     tamper: tamperRiskPct, ocr: ocrRiskPct, identity: identityRiskPct,
-    crossDoc: crossDocRiskPct, source: sourceRiskPct, liveness: livenessRiskPct,
+    voice: voiceRiskPct, source: sourceRiskPct, liveness: livenessRiskPct,
   };
   const factors = FACTOR_DEFS.map(f=>{
     const riskPct = raw[f.key];
@@ -620,127 +599,141 @@ function computeRiskFusion({ tamper, identity, crossDoc, source, liveness, ocrAv
   return { score, verdict, factors };
 }
 
+function buildCaseAnalysis(applicant, docs, hasVoice, seedOverride){
+  const seed = seedOverride || (applicant.name+'|'+applicant.idNumber);
+  const ocr = runOcrExtraction(seed, applicant);
+  ocr.avgConfidence = Math.round(ocr.fields.reduce((s,f)=>s+f.confidence,0)/ocr.fields.length);
+  const tamper = runTamperAnalysis(seed);
+  const identity = runIdentityMatch(seed);
+  const voice = runVoiceAnalysis(seed, hasVoice);
+  const source = runSourceVerification(seed);
+  const liveness = runLiveness(seed);
+  const fusion = computeRiskFusion({ tamper, identity, voice, source, liveness, ocrAvg: ocr.avgConfidence });
+  return { seed, ocr, tamper, identity, voice, source, liveness, fusion, docs };
+}
 async function runRealBackendScreening(w){
   const formData = new FormData();
 
-  formData.append('document', w.files.idFront);
+  formData.append('document', w.files.idFront.file);
 
   if(w.files.selfie){
-    formData.append('selfie', w.files.selfie);
+    formData.append('selfie', w.files.selfie.file);
   }
 
   if(w.files.crossDoc){
-    formData.append('supporting_doc', w.files.crossDoc);
+    formData.append('supporting_doc', w.files.crossDoc.file);
   }
 
-  formData.append(
-    'applicant_name',
-    w.applicant.name || ''
-  );
-
-  formData.append(
-    'applicant_dob',
-    w.applicant.dob || ''
-  );
-
-  formData.append(
-    'applicant_id_number',
-    w.applicant.idNumber || ''
-  );
-
-  // The current approved UI has no address field.
-  formData.append(
-    'applicant_address',
-    ''
-  );
+  formData.append('applicant_name', w.applicant.name || '');
+  formData.append('applicant_dob', w.applicant.dob || '');
+  formData.append('applicant_id_number', w.applicant.idNumber || '');
+  formData.append('applicant_address', '');
 
   const response = await fetch(
-    'http://127.0.0.1:8000/api/v1/verify/document',
+  '/api/v1/verify/document',
     {
-      method: 'POST',
-      body: formData,
+      method:'POST',
+      body:formData
     }
   );
 
   if(!response.ok){
-    let message =
-      `Backend request failed (${response.status})`;
+    let message = `Backend request failed (${response.status})`;
 
     try{
       const errorData = await response.json();
-
       if(errorData.detail){
         message = errorData.detail;
       }
-    }catch(_){
-      // Keep default error message.
-    }
+    }catch(_){}
 
     throw new Error(message);
   }
 
   const backend = await response.json();
 
-  return adaptBackendResultToUi(
-    backend,
-    w
-  );
+  return adaptBackendResultToUi(backend, w);
 }
 
+function normalizeFrontendValue(value){
+  if(value == null) return '';
 
-function adaptBackendResultToUi(backend, w){
+  return String(value)
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g,' ');
+}
 
+function buildFrontendDocs(w){
+  return [
+    w.files.idFront
+      ? {
+          type:w.docType || 'Identity Document',
+          filename:w.files.idFront.name
+        }
+      : null,
+
+    w.files.idBack
+      ? {
+          type:(w.docType || 'Identity Document') + ' (back)',
+          filename:w.files.idBack.name
+        }
+      : null,
+
+    w.files.selfie
+      ? {
+          type:'Selfie Photo',
+          filename:w.files.selfie.name
+        }
+      : null,
+
+    w.files.crossDoc
+      ? {
+          type:'Supporting Document',
+          filename:w.files.crossDoc.name
+        }
+      : null,
+  ].filter(Boolean);
+}
+
+function adaptBackendResultToUi(backend,w){
   const documentFields =
     backend.document?.extracted_fields || {};
 
   const ocrConfidence =
     backend.document?.ocr_confidence != null
-      ? Math.round(
-          backend.document.ocr_confidence * 100
-        )
+      ? Math.round(backend.document.ocr_confidence * 100)
       : 0;
 
-  // ----------------------------------------------------------
-  // OCR
-  // ----------------------------------------------------------
-
   const ocrFieldDefinitions = [
-    ['Full Name', 'name'],
-    ['Date of Birth', 'date_of_birth'],
-    ['Document Number', 'document_number'],
-    ['Gender', 'gender'],
-    ['Address', 'address'],
+    ['Full Name','name'],
+    ['Date of Birth','date_of_birth'],
+    ['Document Number','document_number'],
+    ['Gender','gender'],
+    ['Address','address'],
   ];
 
-  const ocrFields =
-    ocrFieldDefinitions
-      .filter(([, key]) => documentFields[key])
-      .map(([label, key]) => ({
-        label,
-        value: documentFields[key],
-        confidence: ocrConfidence,
-        matchesInput:
-          key === 'name'
-            ? normalizeFrontendValue(
-                documentFields[key]
-              ) === normalizeFrontendValue(
-                w.applicant.name
-              )
-            : key === 'document_number'
-              ? normalizeFrontendValue(
-                  documentFields[key]
-                ) === normalizeFrontendValue(
-                  w.applicant.idNumber
-                )
-              : null,
-      }));
+  const ocrFields = ocrFieldDefinitions
+    .filter(([,key]) => documentFields[key])
+    .map(([label,key]) => ({
+      label,
+      value:String(documentFields[key]),
+      confidence:ocrConfidence,
 
-  // ----------------------------------------------------------
-  // Tamper / anomaly
-  // ----------------------------------------------------------
+      matchesInput:
+        key === 'name'
+          ? normalizeFrontendValue(documentFields[key]) ===
+            normalizeFrontendValue(w.applicant.name)
+
+          : key === 'document_number'
+            ? normalizeFrontendValue(documentFields[key]) ===
+              normalizeFrontendValue(w.applicant.idNumber)
+
+            : null,
+    }));
 
   const anomalyScore =
-    backend.explanations?.anomaly_score ?? 0;
+    Number(backend.explanations?.anomaly_score ?? 0);
 
   const tamperScore =
     Math.round(anomalyScore * 100);
@@ -750,56 +743,48 @@ function adaptBackendResultToUi(backend, w){
 
   const tamperChecks = [
     {
-      name: 'Document anomaly analysis',
-      pass: anomalyIndicators.length === 0,
-    },
+      name:'Document anomaly analysis',
+      pass:anomalyIndicators.length === 0
+    }
   ];
-
-  // ----------------------------------------------------------
-  // Cross-document verification
-  // ----------------------------------------------------------
 
   const crossDocument =
     backend.cross_document || {
-      performed: false,
-      score: null,
-      classification: 'Not Submitted',
-      matches: [],
-      mismatches: [],
-      unavailable: [],
+      performed:false,
+      score:null,
+      classification:'Not Submitted',
+      matches:[],
+      mismatches:[],
+      unavailable:[]
     };
 
   const identityFields = [];
 
-  (crossDocument.matches || []).forEach(match => {
+  (crossDocument.matches || []).forEach(match=>{
     identityFields.push({
-      label: match,
-      match: true,
+      label:match,
+      match:true
     });
   });
 
-  (crossDocument.mismatches || []).forEach(mismatch => {
+  (crossDocument.mismatches || []).forEach(mismatch=>{
     identityFields.push({
-      label: mismatch,
-      match: false,
+      label:mismatch,
+      match:false
     });
   });
 
-  (crossDocument.unavailable || []).forEach(item => {
+  (crossDocument.unavailable || []).forEach(item=>{
     identityFields.push({
-      label: item,
-      match: null,
+      label:item,
+      match:null
     });
   });
 
   const identityScore =
     crossDocument.score != null
-      ? crossDocument.score
+      ? Number(crossDocument.score)
       : 0;
-
-  // ----------------------------------------------------------
-  // Existing Cross-Document UI format
-  // ----------------------------------------------------------
 
   const crossDocProvided =
     !!crossDocument.performed &&
@@ -807,258 +792,1215 @@ function adaptBackendResultToUi(backend, w){
 
   const crossDocFlags = [];
 
-  (crossDocument.matches || []).forEach(match => {
+  (crossDocument.matches || []).forEach(match=>{
     crossDocFlags.push({
-      name: match,
-      pass: true,
+      name:match,
+      pass:true
     });
   });
 
-  (crossDocument.mismatches || []).forEach(mismatch => {
+  (crossDocument.mismatches || []).forEach(mismatch=>{
     crossDocFlags.push({
-      name: mismatch,
-      pass: false,
+      name:mismatch,
+      pass:false
     });
   });
-
-  // ----------------------------------------------------------
-  // Face / liveness
-  // ----------------------------------------------------------
 
   const faceSimilarity =
     backend.face_verification?.similarity;
 
   const livenessScore =
     faceSimilarity != null
-      ? Math.round(
-          faceSimilarity * 100
-        )
+      ? Math.round(Number(faceSimilarity) * 100)
       : 0;
 
   const livenessChecks = [
     {
-      name: 'Face similarity',
+      name:'Face similarity',
       pass:
         faceSimilarity != null &&
-        faceSimilarity >= 0.60,
-    },
+        Number(faceSimilarity) >= 0.60
+    }
   ];
-
-  // ----------------------------------------------------------
-  // Source verification
-  // ----------------------------------------------------------
 
   const source = [
-    {
-      name: 'Authorized Source',
-      status: 'Not Connected',
-    },
-  ];
-
-  // ----------------------------------------------------------
-  // REAL BACKEND RISK SCORE
-  // ----------------------------------------------------------
+  {
+    name:'Authorized Source',
+    status:'Not Connected',
+    ref:'Not connected'
+  }
+];
 
   const riskScore =
-    Number.isFinite(
-      backend.risk_score
-    )
-      ? backend.risk_score
+    Number.isFinite(Number(backend.risk_score))
+      ? Number(backend.risk_score)
       : 0;
 
   const verdict =
-    backend.classification ||
-    'REVIEW_REQUIRED';
-
-  // ----------------------------------------------------------
-  // Factor presentation
-  // ----------------------------------------------------------
+    backend.classification || 'REVIEW_REQUIRED';
 
   const factorDefinitions = [
     {
-      name: 'Document Tamper Score',
-      riskPct: tamperScore,
+      name:'Document Tamper Score',
+      riskPct:tamperScore
     },
-
     {
-      name: 'OCR Data Consistency',
-      riskPct: Math.max(
-        0,
-        100 - ocrConfidence
-      ),
+      name:'OCR Data Consistency',
+      riskPct:Math.max(0,100-ocrConfidence)
     },
-
     {
-      name: 'Cross-Document Identity Match',
-      riskPct: Math.max(
-        0,
-        100 - identityScore
-      ),
+      name:'Cross-Document Identity Match',
+      riskPct:Math.max(0,100-identityScore)
     },
-
     {
-      name: 'Cross-Document Verification',
-      riskPct: crossDocProvided
-        ? Math.max(
-            0,
-            100 - (
-              crossDocument.score ?? 0
-            )
-          )
-        : 0,
+      name:'Cross-Document Verification',
+      riskPct:
+        crossDocProvided
+          ? Math.max(0,100-(Number(crossDocument.score) || 0))
+          : 0
     },
-
     {
-      name: 'Authorized Source Verification',
-      riskPct: 0,
+      name:'Authorized Source Verification',
+      riskPct:0
     },
-
     {
-      name: 'Selfie / Liveness Match',
+      name:'Selfie / Liveness Match',
       riskPct:
         faceSimilarity != null
-          ? Math.max(
-              0,
-              100 - livenessScore
-            )
-          : 0,
+          ? Math.max(0,100-livenessScore)
+          : 0
     },
   ];
 
   const totalRawRisk =
     factorDefinitions.reduce(
-      (sum, factor) =>
-        sum + factor.riskPct,
+      (sum,factor)=>sum + factor.riskPct,
       0
     );
 
   const factors =
-    factorDefinitions.map(factor => {
-
+    factorDefinitions.map(factor=>{
       const contribution =
         totalRawRisk > 0
-          ? (
-              factor.riskPct /
-              totalRawRisk
-            ) * riskScore
+          ? (factor.riskPct / totalRawRisk) * riskScore
           : 0;
 
       return {
-        name: factor.name,
-        riskPct: Math.round(
-          factor.riskPct
-        ),
-        contribution,
+        name:factor.name,
+        riskPct:Math.round(factor.riskPct),
+        contribution
       };
     });
 
   return {
     seed:
       backend.request_id ||
-      (
-        w.applicant.name +
-        '|' +
-        w.applicant.idNumber
-      ),
+      (w.applicant.name + '|' + w.applicant.idNumber),
 
-    ocr: {
-      fields: ocrFields,
-      avgConfidence: ocrConfidence,
+    ocr:{
+      fields:ocrFields,
+      avgConfidence:ocrConfidence
     },
 
-    tamper: {
-      score: tamperScore,
-      checks: tamperChecks,
-      flagged:
-        anomalyIndicators.length > 0,
+    tamper:{
+      score:tamperScore,
+      checks:tamperChecks,
+      flagged:anomalyIndicators.length > 0
     },
 
-    identity: {
-      score: identityScore,
-      fields: identityFields,
+    identity:{
+      score:identityScore,
+      fields:identityFields
     },
 
-    crossDoc: {
-      provided: crossDocProvided,
-      score: crossDocument.score,
-      classification:
-        crossDocument.classification,
-      flags: crossDocFlags,
+    crossDoc:{
+      provided:crossDocProvided,
+      score:crossDocument.score,
+      classification:crossDocument.classification,
+      flags:crossDocFlags
     },
 
     source,
 
-    liveness: {
-      score: livenessScore,
-      checks: livenessChecks,
+    liveness:{
+      score:livenessScore,
+      checks:livenessChecks
     },
 
-    fusion: {
-      score: riskScore,
+    fusion:{
+      score:riskScore,
       verdict,
-      factors,
+      factors
     },
 
-    docs: buildFrontendDocs(w),
+    docs:buildFrontendDocs(w),
 
-    backendResponse: backend,
+    backendResponse:backend
+  };
+}
+/* ---------------------------- demo case seeding ---------------------------- */
+function seedDemoCases(){
+  const cases = [];
+  for(let i=0;i<14;i++){
+    const rng = rngFor('seed-case-'+i);
+    const name = NAMES[i % NAMES.length];
+    const country = pick(rng, COUNTRIES);
+    const docType = pick(rng, DOC_TYPES);
+    const idNumber = (pick(rng,['A','B','C','D','E'])+rint(rng,100000,999999)).toUpperCase();
+    const dob = fmtDate(new Date(rint(rng,1965,2002), rint(rng,0,11), rint(rng,1,28)));
+    const applicant = { name, dob, idNumber, country };
+    const hasVoice = rng() > 0.15;
+    const analysis = buildCaseAnalysis(applicant, [
+      { type: docType, filename: docType.replace(/[^a-zA-Z]/g,'')+'_front.jpg' },
+      { type:'Selfie Photo', filename:'selfie.jpg' },
+    ], hasVoice, 'seed-case-'+i);
+    const submitted = daysAgo(rint(rng,0,29));
+    const analyst = pick(rng, DEMO_USERS.filter(u=>u.role==='Analyst'||u.role==='Administrator'));
+    let status = 'Pending Review';
+    const roll = rng();
+    if(analysis.fusion.verdict==='Genuine') status = roll>0.25 ? 'Approved' : 'Pending Review';
+    else if(analysis.fusion.verdict==='Suspicious') status = roll>0.6 ? 'Escalated' : (roll>0.3 ? 'Pending Review':'Approved');
+    else status = roll>0.35 ? 'Rejected' : 'Escalated';
+
+    const auditTrail = [
+      { time: submitted, actor: analyst.name, role: analyst.role, action:'Screening Submitted', note:`Case created for ${name} (${docType}).` },
+      { time: new Date(submitted.getTime()+6*60000), actor:'ShieldX Engine', role:'System', action:'Risk Fusion Complete', note:`Risk score ${analysis.fusion.score} — ${analysis.fusion.verdict}.` },
+    ];
+    if(status!=='Pending Review'){
+      const reviewer = pick(rng, DEMO_USERS.filter(u=>u.role==='Reviewer'||u.role==='Administrator'));
+      auditTrail.push({ time: new Date(submitted.getTime()+3600000*rint(rng,1,20)), actor:reviewer.name, role:reviewer.role,
+        action: status==='Approved' ? 'Case Approved' : status==='Rejected' ? 'Case Rejected' : 'Case Escalated',
+        note: status==='Approved' ? 'Reviewed and confirmed genuine identity.' : status==='Rejected' ? 'Confirmed fraudulent indicators; application rejected.' : 'Escalated for senior review due to conflicting signals.' });
+    }
+    cases.push({
+      id: 'SX-'+(1000+i),
+      applicant, docType, submitted, status, analysis,
+      riskScore: analysis.fusion.score, riskLevel: analysis.fusion.verdict,
+      analyst: analyst.name, reviewer: status!=='Pending Review' ? auditTrail[auditTrail.length-1].actor : null,
+      auditTrail,
+    });
+  }
+  cases.sort((a,b)=>b.submitted-a.submitted);
+  return cases;
+}
+
+function logAudit(action, note, caseId){
+  state.auditLog.unshift({
+    id: uid('LOG'),
+    time: new Date(),
+    actor: state.currentUser ? state.currentUser.name : 'System',
+    role: state.currentUser ? state.currentUser.role : '-',
+    action, note: note||'', caseId: caseId||null,
+  });
+}
+
+/* =========================================================================
+   TOASTS
+   ========================================================================= */
+function toast(msg, type){
+  const host = document.getElementById('toastHost');
+  const el = document.createElement('div');
+  el.className = 'toast ' + (type||'ok');
+  const ic = type==='err' ? icon('x') : type==='warn' ? icon('alert') : icon('check');
+  el.innerHTML = `<span style="opacity:.85">${ic}</span><span>${esc(msg)}</span>`;
+  host.appendChild(el);
+  setTimeout(()=>{ el.style.transition='.3s'; el.style.opacity='0'; el.style.transform='translateY(6px)'; setTimeout(()=>el.remove(),300); }, 3200);
+}
+
+/* =========================================================================
+   ROUTER / MAIN RENDER
+   ========================================================================= */
+function navigate(view, params){
+  state.view = view;
+  state.sidebarOpen = false;
+  if(params && params.caseId) state.caseFocusId = params.caseId;
+  if(view!=='new-screening') state.wizard = null;
+  window.scrollTo(0,0);
+  render();
+}
+function openCase(id){ navigate('case-detail', { caseId:id }); }
+
+function render(){
+  const app = document.getElementById('app');
+  if(!state.authed){
+    app.innerHTML = renderLogin();
+    attachLoginHandlers();
+    return;
+  }
+  app.innerHTML = renderShell();
+  attachShellHandlers();
+}
+
+/* =========================================================================
+   LOGIN VIEW
+   ========================================================================= */
+function renderLogin(){
+  return `
+  <div class="login-wrap">
+    <div class="login-aside">
+      <div class="brand-mark">${icon('logo')} ShieldX</div>
+      <div>
+        <h1 class="login-headline">Intelligent Identity &amp; Document Risk Screening</h1>
+        <p class="login-copy">Detect forged documents, synthetic voices and identity mismatches before they become your problem — with an explainable risk score behind every decision.</p>
+        <div class="login-stats">
+          <div class="login-stat"><b>${state.cases.length ? state.cases.length : 14}+</b><span>Cases screened</span></div>
+          <div class="login-stat"><b>6</b><span>Risk signal engines</span></div>
+          <div class="login-stat"><b>99.9%</b><span>Platform uptime</span></div>
+        </div>
+      </div>
+      <div class="text-xs" style="color:#5E7191;">© ${new Date().getFullYear()} ShieldX Technologies. All rights reserved.</div>
+    </div>
+    <div class="login-form-side">
+      <div class="login-box">
+        <div class="brand-mark" style="margin-bottom:26px;color:var(--ink-900);">${icon('logo')} ShieldX</div>
+        <h2>Sign in to your workspace</h2>
+        <p class="sub">Enter your credentials to access the screening console.</p>
+        <div class="login-error" id="loginError">Invalid username or password. Try one of the demo accounts below.</div>
+        <form id="loginForm">
+          <div class="field">
+            <label class="field-label">Username</label>
+            <input class="input" id="loginUser" placeholder="e.g. admin" autocomplete="username" required>
+          </div>
+          <div class="field">
+            <label class="field-label">Password</label>
+            <input class="input" id="loginPass" type="password" placeholder="••••••••" autocomplete="current-password" required>
+          </div>
+          <button type="submit" class="btn btn-primary btn-block">${icon('lock')} Sign in securely</button>
+        </form>
+        <p class="text-xs text-faint" style="margin-top:16px;">Demo workspace — quick-fill a role to explore:</p>
+        <div class="demo-creds">
+          ${DEMO_USERS.map(u=>`<div class="demo-cred-btn" data-user="${u.username}" data-pass="${u.password}">${u.role}</div>`).join('')}
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+function attachLoginHandlers(){
+  document.getElementById('loginForm').addEventListener('submit', e=>{
+    e.preventDefault();
+    const u = document.getElementById('loginUser').value.trim().toLowerCase();
+    const p = document.getElementById('loginPass').value;
+    const found = DEMO_USERS.find(x=>x.username===u && x.password===p);
+    if(found){ doLogin(found); }
+    else { document.getElementById('loginError').style.display='block'; }
+  });
+  document.querySelectorAll('.demo-cred-btn').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      document.getElementById('loginUser').value = btn.dataset.user;
+      document.getElementById('loginPass').value = btn.dataset.pass;
+    });
+  });
+}
+function doLogin(user){
+  state.authed = true;
+  state.currentUser = user;
+  state.view = 'dashboard';
+  logAudit('Login', `${user.name} signed in.`);
+  render();
+  toast(`Welcome back, ${user.name.split(' ')[0]}.`, 'ok');
+}
+function doLogout(){
+  logAudit('Logout', `${state.currentUser.name} signed out.`);
+  state.authed = false;
+  state.currentUser = null;
+  state.userMenuOpen = false;
+  render();
+}
+
+/* =========================================================================
+   APP SHELL
+   ========================================================================= */
+const NAV_ITEMS = [
+  { id:'dashboard', label:'Dashboard', icon:'dashboard' },
+  { id:'new-screening', label:'New Screening', icon:'scan' },
+  { id:'cases', label:'Case Management', icon:'cases' },
+  { id:'audit', label:'Audit Logs', icon:'audit', perm:'viewAudit' },
+  { id:'settings', label:'Settings', icon:'settings', perm:'manageSettings', altAllow:true },
+];
+const VIEW_TITLES = {
+  dashboard:'Dashboard', 'new-screening':'New Screening', cases:'Case Management',
+  'case-detail':'Case Detail', audit:'Audit Logs', settings:'Settings',
+};
+
+function renderShell(){
+  const perms = ROLE_PERMISSIONS[state.currentUser.role];
+  const navHtml = NAV_ITEMS.map(item=>{
+    if(item.perm && !perms[item.perm] && !item.altAllow) return '';
+    if(item.id==='settings' && !perms.manageSettings && !perms.viewAudit) return '';
+    return `<div class="nav-item ${state.view===item.id?'active':''}" data-nav="${item.id}">${icon(item.icon)}<span>${item.label}</span></div>`;
+  }).join('');
+
+  return `
+  <div class="app-shell">
+    <div class="sidebar-scrim ${state.sidebarOpen?'show':''}" id="sidebarScrim"></div>
+    <aside class="sidebar ${state.sidebarOpen?'open':''}" id="sidebar">
+      <div class="sidebar-brand">${icon('logo')} ShieldX</div>
+      <nav class="sidebar-nav">
+        <div class="nav-group-label">Workspace</div>
+        ${navHtml}
+      </nav>
+      <div class="sidebar-foot">
+        <div style="display:flex;align-items:center;gap:6px;color:#8FA0BC;">${icon('lock')} AES-256 encrypted session</div>
+      </div>
+    </aside>
+    <div class="main-col">
+      <header class="topbar">
+        <div class="flex items-center">
+          <button class="hamburger" id="hamburgerBtn" aria-label="Open menu">${icon('menu')}</button>
+          <div class="topbar-title">${VIEW_TITLES[state.view]||''}</div>
+        </div>
+        <div class="topbar-right">
+          <button class="btn-icon btn-ghost" title="Notifications" style="position:relative;">
+            ${icon('bell')}
+            ${state.cases.filter(c=>c.status==='Pending Review').length ? '<span style="position:absolute;top:6px;right:6px;width:7px;height:7px;border-radius:50%;background:var(--danger);"></span>' : ''}
+          </button>
+          <div class="user-chip" id="userChipBtn">
+            <div class="avatar">${initials(state.currentUser.name)}</div>
+            <div>
+              <div class="uname">${state.currentUser.name}</div>
+              <div class="urole">${state.currentUser.role}</div>
+            </div>
+            ${icon('chev')}
+            <div class="user-menu ${state.userMenuOpen?'open':''}" id="userMenu">
+              <button data-nav="settings">${icon('settings')} Account &amp; Settings</button>
+              <button id="logoutBtn">${icon('x')} Sign out</button>
+            </div>
+          </div>
+        </div>
+      </header>
+      <div class="content" id="contentArea">
+        ${renderView()}
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderView(){
+  switch(state.view){
+    case 'dashboard': return renderDashboard();
+    case 'new-screening': return renderNewScreening();
+    case 'cases': return renderCases();
+    case 'case-detail': return renderCaseDetail();
+    case 'audit': return renderAuditView();
+    case 'settings': return renderSettings();
+    default: return renderDashboard();
+  }
+}
+
+function attachShellHandlers(){
+  document.querySelectorAll('[data-nav]').forEach(el=>{
+    el.addEventListener('click', ()=> navigate(el.dataset.nav));
+  });
+  const ham = document.getElementById('hamburgerBtn');
+  if(ham) ham.addEventListener('click', ()=>{ state.sidebarOpen = true; render(); });
+  const scrim = document.getElementById('sidebarScrim');
+  if(scrim) scrim.addEventListener('click', ()=>{ state.sidebarOpen = false; render(); });
+  const chip = document.getElementById('userChipBtn');
+  if(chip) chip.addEventListener('click', (e)=>{ e.stopPropagation(); state.userMenuOpen = !state.userMenuOpen; render(); });
+  const logoutBtn = document.getElementById('logoutBtn');
+  if(logoutBtn) logoutBtn.addEventListener('click', doLogout);
+  document.addEventListener('click', function outsideClose(e){
+    if(state.userMenuOpen && !e.target.closest('.user-chip')){ state.userMenuOpen=false; render(); }
+  }, { once:true });
+
+  attachViewHandlers();
+  renderChartsForView();
+}
+
+function renderCaseDetailCharts(){ /* case detail uses inline bar rows, not canvas charts */ }
+
+/* =========================================================================
+   VIEW EVENT DISPATCHER
+   ========================================================================= */
+function attachViewHandlers(){
+  // generic row-open (dashboard recent cases + case list)
+  document.querySelectorAll('[data-open-case]').forEach(row=>{
+    row.addEventListener('click', ()=> openCase(row.dataset.openCase));
+  });
+
+  if(state.view==='new-screening') attachWizardHandlers();
+
+  if(state.view==='cases'){
+    const search = document.getElementById('caseSearch');
+    if(search) search.addEventListener('input', ()=>{ state.filters.q = search.value; render(); });
+    const fr = document.getElementById('filterRisk'); if(fr) fr.addEventListener('change', ()=>{ state.filters.risk=fr.value; render(); });
+    const fs = document.getElementById('filterStatus'); if(fs) fs.addEventListener('change', ()=>{ state.filters.status=fs.value; render(); });
+    const fd = document.getElementById('filterDoc'); if(fd) fd.addEventListener('change', ()=>{ state.filters.docType=fd.value; render(); });
+    const clear = document.getElementById('clearFilters'); if(clear) clear.addEventListener('click', ()=>{ state.filters={q:'',risk:'All',status:'All',docType:'All'}; render(); });
+  }
+
+  if(state.view==='case-detail'){
+    document.querySelectorAll('[data-tab]').forEach(b=> b.addEventListener('click', ()=>{ caseDetailState.tab=b.dataset.tab; render(); }));
+    const jump = document.querySelector('[data-tab-jump]');
+    if(jump) jump.addEventListener('click', ()=>{ caseDetailState.tab='report'; render(); });
+    document.querySelectorAll('[data-decide]').forEach(b=>{
+      b.addEventListener('click', ()=>{
+        const c = state.cases.find(x=>x.id===state.caseFocusId);
+        recordReviewDecision(c, b.dataset.decide);
+      });
+    });
+    const dl = document.getElementById('downloadReportBtn');
+    if(dl) dl.addEventListener('click', ()=>{ downloadReport(state.cases.find(x=>x.id===state.caseFocusId)); });
+  }
+
+  if(state.view==='audit'){
+    const s = document.getElementById('auditSearch'); if(s) s.addEventListener('input', ()=>{ auditFilterState.q=s.value; render(); });
+    const a = document.getElementById('auditActionFilter'); if(a) a.addEventListener('change', ()=>{ auditFilterState.action=a.value; render(); });
+  }
+
+  if(state.view==='settings') attachSettingsHandlers();
+}
+
+/* =========================================================================
+   SHARED COMPONENT: risk gauge (signature element)
+   ========================================================================= */
+function gaugeSvg(score, size){
+  size = size || 200;
+  const cx = size/2, cy = size/2, r = size*0.4;
+  const startAngle = Math.PI, endAngle = 0; // semicircle, left to right (top half)
+  function pt(angle, radius){ return [cx + radius*Math.cos(angle), cy - radius*Math.sin(angle)]; }
+  function arcPath(a0, a1, radius){
+    const [x0,y0] = pt(a0, radius), [x1,y1] = pt(a1, radius);
+    const large = Math.abs(a1-a0) > Math.PI ? 1 : 0;
+    return `M ${x0} ${y0} A ${radius} ${radius} 0 ${large} 0 ${x1} ${y1}`;
+  }
+  // 3 zones over the semicircle: genuine(0-30%), suspicious(30-60%), high(60-100%) mapped across PI..0
+  const zones = [
+    { from:0, to:0.30, color:'var(--safe)' },
+    { from:0.30, to:0.60, color:'var(--warn)' },
+    { from:0.60, to:1.0, color:'var(--danger)' },
+  ];
+  const zonePaths = zones.map(z=>{
+    const a0 = Math.PI - z.from*Math.PI, a1 = Math.PI - z.to*Math.PI;
+    return `<path d="${arcPath(a0,a1,r)}" stroke="${z.color}" stroke-width="14" fill="none" stroke-linecap="round" opacity="0.9"/>`;
+  }).join('');
+  const needleAngle = Math.PI - (score/100)*Math.PI;
+  const needleLen = r*0.86;
+  const [nx,ny] = pt(needleAngle, needleLen);
+  return `<svg viewBox="0 0 ${size} ${size*0.62}" width="${size}" height="${size*0.62}">
+    ${zonePaths}
+    <circle cx="${cx}" cy="${cy}" r="5" fill="var(--ink-900)"/>
+    <line x1="${cx}" y1="${cy}" x2="${nx}" y2="${ny}" stroke="var(--ink-900)" stroke-width="3" stroke-linecap="round"/>
+  </svg>`;
+}
+function gaugeBlock(score, verdict, size){
+  return `<div class="gauge-wrap">
+    ${gaugeSvg(score, size||200)}
+    <div class="gauge-score" style="color:var(${verdictColorVar(verdict)})">${score}</div>
+    <div class="gauge-verdict"><span class="badge ${verdictBadgeClass(verdict)}">${verdict}</span></div>
+    <div class="gauge-label">Composite risk score / 100</div>
+  </div>`;
+}
+
+/* =========================================================================
+   AUDIT LOG VIEW
+   ========================================================================= */
+const auditFilterState = { q:'', action:'All' };
+function renderAuditView(){
+  const actions = ['All', ...Array.from(new Set(state.auditLog.map(l=>l.action)))];
+  const list = state.auditLog.filter(l=>{
+    if(auditFilterState.action!=='All' && l.action!==auditFilterState.action) return false;
+    if(auditFilterState.q){
+      const q = auditFilterState.q.toLowerCase();
+      if(!(l.actor+' '+l.action+' '+l.note+' '+(l.caseId||'')).toLowerCase().includes(q)) return false;
+    }
+    return true;
+  });
+  return `
+  <div class="flex justify-between items-center" style="margin-bottom:16px;flex-wrap:wrap;gap:12px;">
+    <div>
+      <h2 style="margin:0 0 4px;font-size:21px;">Audit Logs</h2>
+      <p class="text-muted text-sm" style="margin:0;">Immutable record of every login, screening and reviewer action across the platform.</p>
+    </div>
+  </div>
+  <div class="card card-pad" style="margin-bottom:16px;">
+    <div class="filter-bar">
+      <div class="search-input-wrap">${icon('search')}<input class="input" id="auditSearch" placeholder="Search logs by actor, action or case…" value="${esc(auditFilterState.q)}"></div>
+      <select class="input" id="auditActionFilter">${actions.map(a=>`<option ${auditFilterState.action===a?'selected':''}>${a}</option>`).join('')}</select>
+    </div>
+  </div>
+  <div class="card card-pad">
+    ${list.length ? `<div class="timeline">
+      ${list.map(l=>`
+        <div class="tl-item">
+          <div class="tl-title">${l.action} <span class="text-faint text-xs">— ${esc(l.actor)} (${l.role})${l.caseId?' · '+l.caseId:''}</span></div>
+          <div class="tl-meta">${fmtDateTime(l.time)}</div>
+          ${l.note ? `<div class="tl-note">${esc(l.note)}</div>` : ''}
+        </div>`).join('')}
+    </div>` : `<div class="empty-state">${icon('audit')}<p>No audit entries match your search.</p></div>`}
+  </div>`;
+}
+
+/* =========================================================================
+   SETTINGS VIEW
+   ========================================================================= */
+const settingsState = { tab:'rbac' };
+function renderSettings(){
+  const perms = ROLE_PERMISSIONS[state.currentUser.role];
+  const tabs = [['rbac','Roles & Access'],['security','Security & Encryption'],['privacy','Privacy Controls'],['about','About']];
+  return `
+  <h2 style="margin:0 0 4px;font-size:21px;">Settings</h2>
+  <p class="text-muted text-sm" style="margin:0 0 18px;">Manage access control, encryption posture and data privacy for the ShieldX workspace.</p>
+  <div class="tabs">${tabs.map(([id,label])=>`<button class="tab-btn ${settingsState.tab===id?'active':''}" data-stab="${id}">${label}</button>`).join('')}</div>
+  ${settingsState.tab==='rbac' ? renderSettingsRbac(perms) : ''}
+  ${settingsState.tab==='security' ? renderSettingsSecurity(perms) : ''}
+  ${settingsState.tab==='privacy' ? renderSettingsPrivacy(perms) : ''}
+  ${settingsState.tab==='about' ? renderSettingsAbout() : ''}
+  `;
+}
+
+function renderSettingsRbac(perms){
+  const roles = Object.keys(ROLE_PERMISSIONS);
+  return `
+  <div class="card card-pad" style="margin-bottom:16px;">
+    <div class="section-title">Role-based access control</div>
+    <div class="section-sub">Permission matrix applied across the ShieldX workspace. ${perms.manageUsers?'As an Administrator you can toggle permissions below.':'Contact an Administrator to change role permissions.'}</div>
+    <div class="scroll-x">
+    <table class="perm-table">
+      <thead><tr><th>Permission</th>${roles.map(r=>`<th>${r}</th>`).join('')}</tr></thead>
+      <tbody>
+        ${PERMISSION_LABELS.map(([key,label])=>`
+          <tr><td>${label}</td>
+            ${roles.map(r=>`<td>
+              <label class="toggle"><input type="checkbox" data-perm-role="${r}" data-perm-key="${key}" ${state.settings.rolePerms[r][key]?'checked':''} ${perms.manageUsers?'':'disabled'}><span class="slider"></span></label>
+            </td>`).join('')}
+          </tr>`).join('')}
+      </tbody>
+    </table>
+    </div>
+  </div>
+  <div class="card card-pad">
+    <div class="section-title">Workspace users</div>
+    <div class="section-sub">Demo accounts provisioned for this workspace.</div>
+    <div class="scroll-x">
+    <table class="data-table">
+      <thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Email</th></tr></thead>
+      <tbody>
+        ${DEMO_USERS.map(u=>`<tr>
+          <td data-label="Name"><div class="flex items-center gap-8"><div class="avatar" style="width:26px;height:26px;font-size:10.5px;">${initials(u.name)}</div>${u.name}</div></td>
+          <td data-label="Username" class="mono text-sm">${u.username}</td>
+          <td data-label="Role"><span class="badge badge-brand">${u.role}</span></td>
+          <td data-label="Email" class="text-sm text-muted">${u.email}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+    </div>
+  </div>`;
+}
+
+function renderSettingsSecurity(perms){
+  const s = state.settings;
+  function toggleRow(id, label, sub, val, disabled){
+    return `<div class="check-row">
+      <div><div class="check-left" style="font-weight:700;">${label}</div><div class="text-xs text-muted" style="margin-top:2px;">${sub}</div></div>
+      <label class="toggle"><input type="checkbox" id="${id}" ${val?'checked':''} ${disabled?'disabled':''}><span class="slider"></span></label>
+    </div>`;
+  }
+  return `
+  <div class="dash-grid" style="grid-template-columns:1fr 1fr;">
+    <div class="card card-pad">
+      <div class="section-title">Encryption</div>
+      <div class="section-sub">Data protection posture for stored and in-transit case data.</div>
+      ${toggleRow('toggleEncryptionAtRest','Encryption at rest (AES-256)','All documents, voice samples and case data encrypted on disk.', s.encryptionAtRest, !perms.manageSettings)}
+      ${toggleRow('toggleTls','TLS 1.3 in transit','All API and upload traffic is encrypted end-to-end.', s.tlsInTransit, !perms.manageSettings)}
+      ${toggleRow('toggleMfa','Multi-factor authentication','Require a second factor for Administrator and Reviewer roles.', s.mfaEnabled, !perms.manageSettings)}
+    </div>
+    <div class="card card-pad">
+      <div class="section-title">Session policy</div>
+      <div class="section-sub">Controls for idle session handling.</div>
+      <div class="field">
+        <label class="field-label">Session timeout: <strong id="sessionTimeoutVal">${s.sessionTimeoutMin} minutes</strong></label>
+        <input type="range" min="5" max="120" step="5" value="${s.sessionTimeoutMin}" class="slider-range" id="sessionTimeoutSlider" ${perms.manageSettings?'':'disabled'}>
+      </div>
+      <div class="text-xs text-muted">Sessions are automatically terminated after this period of inactivity, requiring re-authentication.</div>
+    </div>
+  </div>
+  <div class="card card-pad" style="margin-top:16px;">
+    <div class="section-title">Encryption status</div>
+    <div class="upload-grid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr));">
+      ${[['Data at rest', s.encryptionAtRest],['Data in transit', s.tlsInTransit],['MFA enforced', s.mfaEnabled]].map(([l,v])=>`
+        <div class="card card-pad" style="border-style:dashed;text-align:center;">
+          <div class="check-icon" style="margin:0 auto 8px;background:${v?'var(--safe-soft)':'var(--danger-soft)'};color:${v?'var(--safe)':'var(--danger)'}">${icon(v?'check':'x')}</div>
+          <div class="text-sm" style="font-weight:700;">${l}</div>
+          <div class="text-xs text-muted">${v?'Active':'Disabled'}</div>
+        </div>`).join('')}
+    </div>
+  </div>`;
+}
+
+function renderSettingsPrivacy(perms){
+  const s = state.settings;
+  return `
+  <div class="dash-grid" style="grid-template-columns:1fr 1fr;">
+    <div class="card card-pad">
+      <div class="section-title">Data retention</div>
+      <div class="section-sub">How long screening case data is retained before automatic purge.</div>
+      <div class="field">
+        <label class="field-label">Retention period: <strong id="retentionVal">${s.retentionDays} days</strong></label>
+        <input type="range" min="30" max="1095" step="30" value="${s.retentionDays}" class="slider-range" id="retentionSlider" ${perms.manageSettings?'':'disabled'}>
+      </div>
+      <div class="check-row">
+        <div><div class="check-left" style="font-weight:700;">Anonymize exported reports</div><div class="text-xs text-muted">Mask document numbers and DOB in downloaded reports.</div></div>
+        <label class="toggle"><input type="checkbox" id="toggleAnonymize" ${s.anonymizeExports?'checked':''} ${perms.manageSettings?'':'disabled'}><span class="slider"></span></label>
+      </div>
+      <div class="check-row">
+        <div><div class="check-left" style="font-weight:700;">Require applicant consent</div><div class="text-xs text-muted">Block screening submission without recorded consent.</div></div>
+        <label class="toggle"><input type="checkbox" id="toggleConsent" ${s.consentRequired?'checked':''} ${perms.manageSettings?'':'disabled'}><span class="slider"></span></label>
+      </div>
+    </div>
+    <div class="card card-pad">
+      <div class="section-title">Right to erasure</div>
+      <div class="section-sub">Anonymize a specific case's personally identifiable information on request.</div>
+      <div class="field">
+        <label class="field-label">Select case</label>
+        <select class="input" id="erasureCaseSelect">
+          ${state.cases.map(c=>`<option value="${c.id}">${c.id} — ${esc(c.applicant.name)}</option>`).join('')}
+        </select>
+      </div>
+      <button class="btn btn-outline btn-block" id="erasureBtn" ${perms.manageSettings?'':'disabled'}>${icon('lock')} Anonymize applicant data</button>
+    </div>
+  </div>`;
+}
+
+function renderSettingsAbout(){
+  return `
+  <div class="card card-pad">
+    <div class="section-title">Platform architecture</div>
+    <div class="section-sub">Reference architecture for the ShieldX identity risk screening platform.</div>
+    <div class="kv-list">
+      <div class="kv-item"><span class="k">Frontend</span><span class="v">React / HTML / CSS / JS, responsive across desktop, tablet and mobile</span></div>
+      <div class="kv-item"><span class="k">Backend API</span><span class="v">Python + FastAPI service layer</span></div>
+      <div class="kv-item"><span class="k">OCR Engine</span><span class="v">PaddleOCR / Tesseract</span></div>
+      <div class="kv-item"><span class="k">Image Forensics</span><span class="v">OpenCV-based tamper &amp; splice detection</span></div>
+      <div class="kv-item"><span class="k">Data Store</span><span class="v">PostgreSQL</span></div>
+      <div class="kv-item"><span class="k">This build</span><span class="v">Interactive prototype — deterministic demo analysis logic</span></div>
+    </div>
+  </div>`;
+}
+
+/* =========================================================================
+   BOOTSTRAP
+   ========================================================================= */
+function initApp(){
+  state.cases = seedDemoCases();
+  logAudit('System Initialized', 'ShieldX workspace provisioned with demo case data.');
+  render();
+}
+initApp();
+
+function attachSettingsHandlers(){
+  document.querySelectorAll('[data-stab]').forEach(b=> b.addEventListener('click', ()=>{ settingsState.tab = b.dataset.stab; render(); }));
+  document.querySelectorAll('[data-perm-role]').forEach(cb=>{
+    cb.addEventListener('change', ()=>{
+      state.settings.rolePerms[cb.dataset.permRole][cb.dataset.permKey] = cb.checked;
+      logAudit('RBAC Updated', `${cb.dataset.permKey} for ${cb.dataset.permRole} set to ${cb.checked}.`);
+      toast('Permission updated.', 'ok');
+    });
+  });
+  const bindToggle = (id, path)=>{
+    const el = document.getElementById(id);
+    if(el) el.addEventListener('change', ()=>{ state.settings[path]=el.checked; logAudit('Settings Updated', `${path} set to ${el.checked}.`); toast('Setting saved.','ok'); });
+  };
+  bindToggle('toggleEncryptionAtRest','encryptionAtRest');
+  bindToggle('toggleTls','tlsInTransit');
+  bindToggle('toggleMfa','mfaEnabled');
+  bindToggle('toggleAnonymize','anonymizeExports');
+  bindToggle('toggleConsent','consentRequired');
+  const timeoutSlider = document.getElementById('sessionTimeoutSlider');
+  if(timeoutSlider) timeoutSlider.addEventListener('input', ()=>{ document.getElementById('sessionTimeoutVal').textContent = timeoutSlider.value+' minutes'; state.settings.sessionTimeoutMin = +timeoutSlider.value; });
+  const retentionSlider = document.getElementById('retentionSlider');
+  if(retentionSlider) retentionSlider.addEventListener('input', ()=>{ document.getElementById('retentionVal').textContent = retentionSlider.value+' days'; state.settings.retentionDays = +retentionSlider.value; });
+  const erasureBtn = document.getElementById('erasureBtn');
+  if(erasureBtn) erasureBtn.addEventListener('click', ()=>{
+    const id = document.getElementById('erasureCaseSelect').value;
+    const c = state.cases.find(x=>x.id===id);
+    if(!c) return;
+    c.applicant.name = 'ANONYMIZED';
+    c.applicant.idNumber = '••••••••';
+    c.applicant.dob = '••••••••';
+    c.auditTrail.push({ time:new Date(), actor:state.currentUser.name, role:state.currentUser.role, action:'Data Anonymized', note:`Applicant PII anonymized per erasure request for ${id}.` });
+    logAudit('Data Anonymized', `PII anonymized for case ${id}.`, id);
+    toast(`Case ${id} anonymized.`, 'ok');
+    render();
+  });
+}
+
+/* =========================================================================
+   CASE DETAIL
+   ========================================================================= */
+const caseDetailState = { tab:'overview' };
+
+function renderCaseDetail(){
+  const c = state.cases.find(x=>x.id===state.caseFocusId);
+  if(!c){
+    return `<div class="empty-state">${icon('alert')}<p>Case not found.</p><button class="btn btn-outline" data-nav="cases">Back to cases</button></div>`;
+  }
+  const r = c.analysis;
+  const perms = ROLE_PERMISSIONS[state.currentUser.role];
+  const tabs = [['overview','Overview'],['analysis','Analysis'],['audit','Audit Trail'],['report','Report']];
+
+  return `
+  <div class="flex justify-between items-center" style="margin-bottom:10px;flex-wrap:wrap;gap:12px;">
+    <div>
+      <button class="btn btn-ghost btn-sm" data-nav="cases" style="margin-bottom:8px;padding-left:0;">${icon('chev').replace('polyline points="9 18 15 12 9 6"','polyline points="15 18 9 12 15 6"')} Back to cases</button>
+      <div class="flex items-center gap-12" style="flex-wrap:wrap;">
+        <h2 style="margin:0;font-size:21px;">${esc(c.applicant.name)}</h2>
+        <span class="case-id">${c.id}</span>
+        <span class="badge ${verdictBadgeClass(c.riskLevel)}">${c.riskLevel}</span>
+        <span class="badge ${statusBadgeClass(c.status)}">${c.status}</span>
+      </div>
+    </div>
+    <div class="flex gap-12">
+      <button class="btn btn-outline" data-tab-jump="report">${icon('download')} Generate Report</button>
+    </div>
+  </div>
+
+  <div class="tabs">
+    ${tabs.map(([id,label])=>`<button class="tab-btn ${caseDetailState.tab===id?'active':''}" data-tab="${id}">${label}</button>`).join('')}
+  </div>
+
+  ${caseDetailState.tab==='overview' ? renderCaseOverviewTab(c, perms) : ''}
+  ${caseDetailState.tab==='analysis' ? renderCaseAnalysisTab(c) : ''}
+  ${caseDetailState.tab==='audit' ? renderCaseAuditTab(c) : ''}
+  ${caseDetailState.tab==='report' ? renderCaseReportTab(c) : ''}
+  `;
+}
+
+function renderCaseOverviewTab(c, perms){
+  const r = c.analysis;
+  return `
+  <div class="dash-grid" style="grid-template-columns:1fr 1fr;margin-bottom:16px;">
+    <div class="card card-pad">
+      <div class="section-title">Applicant information</div>
+      <div class="kv-list">
+        <div class="kv-item"><span class="k">Full name</span><span class="v">${esc(c.applicant.name)}</span></div>
+        <div class="kv-item"><span class="k">Date of birth</span><span class="v">${esc(c.applicant.dob)}</span></div>
+        <div class="kv-item"><span class="k">Document number</span><span class="v mono">${esc(c.applicant.idNumber)}</span></div>
+        <div class="kv-item"><span class="k">Country / region</span><span class="v">${esc(c.applicant.country)}</span></div>
+        <div class="kv-item"><span class="k">Document type</span><span class="v">${c.docType}</span></div>
+        <div class="kv-item"><span class="k">Submitted</span><span class="v">${fmtDateTime(c.submitted)}</span></div>
+        <div class="kv-item"><span class="k">Analyst</span><span class="v">${esc(c.analyst)}</span></div>
+        <div class="kv-item"><span class="k">Reviewer</span><span class="v">${esc(c.reviewer||'Unassigned')}</span></div>
+      </div>
+    </div>
+    <div class="card card-pad flex-col items-center" style="justify-content:center;">
+      ${gaugeBlock(c.riskScore, c.riskLevel, 220)}
+    </div>
+  </div>
+
+  <div class="card card-pad" style="margin-bottom:16px;">
+    <div class="section-title">Risk factor breakdown</div>
+    <div class="section-sub">Explainable contribution of each signal engine to the final score.</div>
+    ${r.fusion.factors.map(fc=>`
+      <div class="factor-row">
+        <div class="factor-name">${fc.name}</div>
+        <div class="factor-bar-track"><div class="factor-bar-fill" style="width:${fc.riskPct}%;background:${fc.riskPct>60?'var(--danger)':fc.riskPct>30?'var(--warn)':'var(--safe)'}"></div></div>
+        <div class="factor-pts">+${fc.contribution.toFixed(1)}</div>
+      </div>`).join('')}
+  </div>
+
+  ${perms.review ? `
+  <div class="card card-pad">
+    <div class="section-title">Reviewer validation</div>
+    <div class="section-sub">Record or update the human decision for this case. Every action is written to the audit trail.</div>
+    <div class="field"><textarea class="input" id="caseReviewNote" rows="2" placeholder="Add a reviewer note (required for reject/escalate)"></textarea></div>
+    <div class="flex gap-12" style="flex-wrap:wrap;">
+      <button class="btn btn-safe btn-sm" data-decide="Approved">${icon('check')} Approve</button>
+      <button class="btn btn-warn btn-sm" data-decide="Escalated">${icon('alert')} Escalate</button>
+      <button class="btn btn-danger btn-sm" data-decide="Rejected">${icon('x')} Reject</button>
+    </div>
+  </div>` : `<div class="card card-pad text-sm text-muted">Your role (${state.currentUser.role}) has view-only access to this case.</div>`}
+  `;
+}
+
+function renderCaseAnalysisTab(c){
+  return renderAnalysisSections(c.analysis);
+}
+
+function renderCaseAuditTab(c){
+  return `
+  <div class="card card-pad">
+    <div class="section-title">Case audit trail</div>
+    <div class="section-sub">Immutable, timestamped record of every automated and human action on this case.</div>
+    <div class="timeline" style="margin-top:16px;">
+      ${c.auditTrail.slice().reverse().map(t=>`
+        <div class="tl-item">
+          <div class="tl-title">${t.action} <span class="text-faint text-xs">— ${esc(t.actor)} (${t.role})</span></div>
+          <div class="tl-meta">${fmtDateTime(t.time)}</div>
+          ${t.note ? `<div class="tl-note">${esc(t.note)}</div>` : ''}
+        </div>`).join('')}
+    </div>
+  </div>`;
+}
+
+function renderCaseReportTab(c){
+  const r = c.analysis;
+  return `
+  <div class="card card-pad">
+    <div class="flex justify-between items-center" style="margin-bottom:14px;flex-wrap:wrap;gap:10px;">
+      <div>
+        <div class="section-title" style="margin-bottom:0;">Screening report</div>
+        <div class="section-sub" style="margin-bottom:0;">Generated on demand from live case data.</div>
+      </div>
+      <button class="btn btn-primary btn-sm" id="downloadReportBtn">${icon('download')} Download report (.html)</button>
+    </div>
+    <div class="report-preview" id="reportPrintArea">
+      ${buildReportHtml(c)}
+    </div>
+  </div>`;
+}
+
+function buildReportHtml(c){
+  const r = c.analysis;
+  return `
+    <div class="flex justify-between items-center">
+      <div><strong style="font-size:16px;">ShieldX Screening Report</strong><div class="text-xs text-faint">Case ${c.id} · Generated ${fmtDateTime(new Date())}</div></div>
+      <span class="badge ${verdictBadgeClass(c.riskLevel)}">${c.riskLevel}</span>
+    </div>
+    <hr class="hr-line">
+    <h3 style="font-size:14px;">Applicant</h3>
+    <div class="kv-list">
+      <div class="kv-item"><span class="k">Name</span><span class="v">${esc(c.applicant.name)}</span></div>
+      <div class="kv-item"><span class="k">DOB</span><span class="v">${esc(c.applicant.dob)}</span></div>
+      <div class="kv-item"><span class="k">Document</span><span class="v">${c.docType} · ${esc(c.applicant.idNumber)}</span></div>
+      <div class="kv-item"><span class="k">Country</span><span class="v">${esc(c.applicant.country)}</span></div>
+    </div>
+    <hr class="hr-line">
+    <h3 style="font-size:14px;">Risk fusion summary</h3>
+    <p>Composite risk score: <strong>${c.riskScore} / 100</strong> — classified as <strong>${c.riskLevel}</strong>.</p>
+    <table style="width:100%;border-collapse:collapse;font-size:12.4px;">
+      <thead><tr><th style="text-align:left;padding:6px 0;border-bottom:1px solid var(--border);">Signal</th><th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">Risk</th><th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">Contribution</th></tr></thead>
+      <tbody>
+        ${r.fusion.factors.map(fc=>`<tr><td style="padding:6px 0;border-bottom:1px solid var(--border-soft);">${fc.name}</td><td style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border-soft);">${fc.riskPct}%</td><td style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border-soft);">+${fc.contribution.toFixed(1)} pts</td></tr>`).join('')}
+      </tbody>
+    </table>
+    <hr class="hr-line">
+    <h3 style="font-size:14px;">Document tamper analysis</h3>
+    <p>Tamper score: <strong>${r.tamper.score}/100</strong>. ${r.tamper.checks.filter(x=>!x.pass).length} of ${r.tamper.checks.length} forensic checks flagged.</p>
+    <hr class="hr-line">
+    <h3 style="font-size:14px;">Voice authenticity</h3>
+    <p>${r.voice.provided ? `Classification: <strong>${r.voice.classification}</strong> (score ${r.voice.score}%).` : 'No voice sample was submitted for this case.'}</p>
+    <hr class="hr-line">
+    <h3 style="font-size:14px;">Authorized source verification</h3>
+    <p>${r.source.map(s=>`${s.name}: <strong>${s.status}</strong>`).join(' · ')}</p>
+    <hr class="hr-line">
+    <h3 style="font-size:14px;">Disposition</h3>
+    <p>Status: <strong>${c.status}</strong> · Reviewer: <strong>${esc(c.reviewer||'Unassigned')}</strong></p>
+    <p class="text-xs text-faint">This report was generated by the ShieldX platform using deterministic demo analysis logic and is intended for prototype evaluation purposes.</p>
+  `;
+}
+
+function downloadReport(c){
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>ShieldX Report — ${c.id}</title>
+  <style>body{font-family:Arial,sans-serif;max-width:720px;margin:40px auto;color:#101828;font-size:13px;}
+  h3{margin-top:22px;} table{width:100%;border-collapse:collapse;} td,th{padding:6px 0;border-bottom:1px solid #eee;}
+  .badge{padding:3px 10px;border-radius:100px;font-size:11px;font-weight:700;background:#eee;}</style></head>
+  <body>${buildReportHtml(c)}</body></html>`;
+  const blob = new Blob([html], { type:'text/html' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `ShieldX_Report_${c.id}.html`;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+  logAudit('Report Generated', `Report downloaded for case ${c.id}.`, c.id);
+  toast('Report downloaded.', 'ok');
+}
+
+function recordReviewDecision(c, status){
+  const noteEl = document.getElementById('caseReviewNote');
+  const note = noteEl ? noteEl.value.trim() : '';
+  if((status==='Rejected'||status==='Escalated') && !note){
+    toast('Please add a reviewer note explaining this decision.', 'err');
+    return;
+  }
+  c.status = status;
+  c.reviewer = state.currentUser.name;
+  const actionLabel = status==='Approved'?'Case Approved':status==='Rejected'?'Case Rejected':'Case Escalated';
+  c.auditTrail.push({ time:new Date(), actor:state.currentUser.name, role:state.currentUser.role, action:actionLabel, note: note || `Marked as ${status.toLowerCase()}.` });
+  logAudit(actionLabel, `${c.id}: ${note||'—'}`, c.id);
+  toast(`Case ${c.id} marked as ${status}.`, status==='Rejected'?'err':status==='Escalated'?'warn':'ok');
+  render();
+}
+
+/* =========================================================================
+   NEW SCREENING — WIZARD
+   ========================================================================= */
+const PIPELINE_STAGES = [
+  { key:'ocr', label:'OCR Extraction', sub:'Reading document fields with PaddleOCR / Tesseract' },
+  { key:'tamper', label:'Document Tamper Analysis', sub:'OpenCV-based forensic image inspection' },
+  { key:'identity', label:'Cross-Document Identity Matching', sub:'Reconciling identity fields across submitted documents' },
+  { key:'crossDoc', label:'Cross-Document Verification', sub:'Comparing identity attributes across submitted documents' },
+  { key:'source', label:'Authorized Source Verification', sub:'Checking against connected authoritative registries' },
+  { key:'fusion', label:'Risk Fusion Engine', sub:'Combining all signals into an explainable composite score' },
+];
+
+function freshWizard(){
+  return {
+    step: 1,
+    applicant: { name:'', dob:'', idNumber:'', country: COUNTRIES[0] },
+    files: { idFront:null, idBack:null, selfie:null, crossDoc:null },
+    stageIndex: -1,
+    running: false,
+    result: null,
   };
 }
 
+function renderNewScreening(){
+  if(!state.wizard) state.wizard = freshWizard();
+  const w = state.wizard;
+  const stepLabels = ['Applicant & Documents','Running Analysis','Results & Decision'];
+  const stepperHtml = `<div class="stepper">
+    ${stepLabels.map((lbl,i)=>{
+      const n = i+1;
+      const cls = n<w.step ? 'done' : n===w.step ? 'active' : '';
+      return `<div class="step ${cls}"><div class="num">${n<w.step?icon('check'):n}</div><span>${lbl}</span></div>${i<stepLabels.length-1?'<div class="line '+(n<w.step?'done':'')+'"></div>':''}`;
+    }).join('')}
+  </div>`;
 
-function normalizeFrontendValue(value){
-  if(value == null){
-    return '';
+  let body = '';
+  if(w.step===1) body = renderWizardStep1(w);
+  else if(w.step===2) body = renderWizardStep2(w);
+  else body = renderWizardStep3(w);
+
+  return `
+  <div style="margin-bottom:6px;">
+    <h2 style="margin:0 0 4px;font-size:21px;">New Screening</h2>
+    <p class="text-muted text-sm" style="margin:0 0 20px;">Submit applicant documents and supporting documents to run the full identity risk pipeline.
+  </div>
+  ${stepperHtml}
+  ${body}`;
+}
+
+function renderWizardStep1(w){
+  const a = w.applicant;
+  function uploadBox(key, title, sub, iconName){
+    const f = w.files[key];
+    return `<label class="upload-box ${f?'filled':''}" data-upload="${key}">
+      <input type="file" accept="${key==='selfie' ? 'image/*' : 'image/*,.pdf,application/pdf'}" data-file-input="${key}">
+      ${f && f.previewUrl ? `<img class="upload-thumb" src="${f.previewUrl}">` : `<div style="color:${f?'var(--safe)':'var(--text-faint)'}">${icon(f?'check':iconName)}</div>`}
+      <div class="up-title">${f ? esc(f.name) : title}</div>
+      <div class="up-sub">${f ? (f.sizeLabel+' · uploaded') : sub}</div>
+    </label>`;
+  }
+  return `
+  <div class="card card-pad">
+    <div class="section-title">Applicant details</div>
+    <div class="section-sub">Enter the information exactly as it appears on the primary identity document.</div>
+    <div class="field-row">
+      <div class="field"><label class="field-label">Full name</label><input class="input" id="wName" value="${esc(a.name)}" placeholder="e.g. Aisha Khan"></div>
+      <div class="field"><label class="field-label">Date of birth</label><input class="input" id="wDob" placeholder="e.g. Jan 12, 1994" value="${esc(a.dob)}"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label class="field-label">Document number</label><input class="input" id="wIdNumber" placeholder="e.g. X1234567" value="${esc(a.idNumber)}"></div>
+      <div class="field"><label class="field-label">Country / issuing region</label>
+        <select class="input" id="wCountry">${COUNTRIES.map(c=>`<option ${c===a.country?'selected':''}>${c}</option>`).join('')}</select>
+      </div>
+    </div>
+    <div class="field">
+      <label class="field-label">Document type</label>
+      <select class="input" id="wDocType">${DOC_TYPES.map(d=>`<option ${d===(w.docType||DOC_TYPES[0])?'selected':''}>${d}</option>`).join('')}</select>
+    </div>
+  </div>
+
+  <div class="card card-pad" style="margin-top:16px;">
+    <div class="section-title">Document &amp; biometric upload</div>
+    <div class="section-sub">Upload clear images of the identity document, a selfie for liveness matching, and an optional supporting document for cross-document verification.</div>
+    <div class="upload-grid">
+      ${uploadBox('idFront','ID Document — Front','JPG, PNG or PDF up to 10MB','doc')}
+      ${uploadBox('idBack','ID Document — Back (optional)','JPG, PNG or PDF up to 10MB','doc')}
+      ${uploadBox('selfie','Selfie / Liveness Photo','Clear, front-facing photo','face')}
+      ${uploadBox('crossDoc','Cross-Document Verification','JPG, PNG or PDF up to 10MB','doc')}
+    </div>
+  </div>
+
+  <div class="flex justify-between" style="margin-top:20px;">
+    <button class="btn btn-outline" data-nav="dashboard">Cancel</button>
+    <button class="btn btn-primary" id="wizardNextBtn">Continue to analysis ${icon('chev')}</button>
+  </div>`;
+}
+
+function renderWizardStep2(w){
+  return `
+  <div class="card card-pad">
+    <div class="section-title">Running the ShieldX risk pipeline</div>
+    <div class="section-sub">Analyzing documents for ${esc(w.applicant.name)||'this applicant'} — please keep this window open.</div>
+    <div class="progress-track" style="margin:14px 0 4px;"><div class="progress-fill" style="width:${Math.round(((w.stageIndex+1)/PIPELINE_STAGES.length)*100)}%"></div></div>
+    <div class="pipeline">
+      ${PIPELINE_STAGES.map((s,i)=>{
+        const cls = i<w.stageIndex ? 'done' : i===w.stageIndex ? 'active' : '';
+        const circContent = i<w.stageIndex ? icon('check') : i===w.stageIndex ? '<div class="spinner"></div>' : (i+1);
+        return `<div class="pipe-stage ${cls}">
+          <div class="rail"><div class="circ">${circContent}</div>${i<PIPELINE_STAGES.length-1?'<div class="bar"></div>':''}</div>
+          <div class="body">
+            <div class="p-title">${s.label}</div>
+            <div class="p-sub">${i<=w.stageIndex ? s.sub : 'Waiting…'}</div>
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
+  </div>`;
+}
+
+function renderWizardStep3(w){
+  const r = w.result;
+  const f = r.fusion;
+  return `
+  <div class="card card-pad" style="margin-bottom:16px;">
+    <div class="flex" style="gap:24px;flex-wrap:wrap;align-items:center;justify-content:space-between;">
+      <div style="flex:1;min-width:260px;">
+        <div class="section-title">Risk Fusion — Explainable Score</div>
+        <div class="section-sub">Composite score weighted across six independent signal engines.</div>
+        <div style="margin-top:10px;">
+          ${f.factors.map(fc=>`
+            <div class="factor-row">
+              <div class="factor-name">${fc.name}</div>
+              <div class="factor-bar-track"><div class="factor-bar-fill" style="width:${fc.riskPct}%;background:${fc.riskPct>60?'var(--danger)':fc.riskPct>30?'var(--warn)':'var(--safe)'}"></div></div>
+              <div class="factor-pts">+${fc.contribution.toFixed(1)}</div>
+            </div>`).join('')}
+        </div>
+      </div>
+      <div style="flex-shrink:0;">${gaugeBlock(f.score, f.verdict, 220)}</div>
+    </div>
+  </div>
+
+  ${renderAnalysisSections(r)}
+
+  <div class="card card-pad" style="margin-top:16px;">
+    <div class="section-title">Reviewer decision</div>
+    <div class="section-sub">This case will be logged to the audit trail with your decision and role.</div>
+    <div class="field"><label class="field-label">Reviewer note</label><textarea class="input" id="wizardReviewNote" rows="3" placeholder="Add context for this decision (optional for approve, recommended for reject/escalate)"></textarea></div>
+    <div class="flex gap-12" style="flex-wrap:wrap;">
+      <button class="btn btn-safe" id="wizardApprove">${icon('check')} Approve as Genuine</button>
+      <button class="btn btn-warn" id="wizardEscalate">${icon('alert')} Escalate for Senior Review</button>
+      <button class="btn btn-danger" id="wizardReject">${icon('x')} Reject as Fraudulent</button>
+    </div>
+  </div>`;
+}
+
+function renderAnalysisSections(r){
+  return `
+  <div class="dash-grid" style="grid-template-columns:1fr 1fr;">
+    <div class="card card-pad">
+      <div class="section-title">OCR extracted fields</div>
+      <div class="section-sub">Average confidence ${r.ocr.avgConfidence}%</div>
+      <div class="kv-list">
+        ${r.ocr.fields.map(fl=>`
+          <div class="kv-item">
+            <span class="k">${fl.label}</span>
+            <span class="v">${esc(fl.value)} <span class="text-faint text-xs">(${fl.confidence}%)</span></span>
+          </div>`).join('')}
+      </div>
+    </div>
+    <div class="card card-pad">
+      <div class="section-title">Document tamper analysis</div>
+      <div class="section-sub">Overall tamper score: <strong style="color:${r.tamper.score>60?'var(--danger)':r.tamper.score>30?'var(--warn)':'var(--safe)'}">${r.tamper.score}/100</strong></div>
+      ${r.tamper.checks.map(c=>checkRow(c.name, c.pass)).join('')}
+    </div>
+  </div>
+  <div class="dash-grid" style="grid-template-columns:1fr 1fr;margin-top:16px;">
+    <div class="card card-pad">
+      <div class="section-title">Cross-document identity match</div>
+      <div class="section-sub">Match confidence: <strong>${r.identity.score}%</strong> &nbsp;·&nbsp; Liveness score: <strong>${r.liveness.score}%</strong></div>
+      ${r.identity.fields.map(fl=>checkRow(fl.label, fl.match)).join('')}
+    </div>
+   <div class="card card-pad">
+  <div class="section-title">Cross-document verification</div>
+  ${r.crossDoc && r.crossDoc.provided ? `
+    <div class="section-sub">Classification: <strong>${r.crossDoc.classification}</strong> · Score ${r.crossDoc.score}%</div>
+    ${r.crossDoc.flags.map(fl=>checkRow(fl.name, fl.pass)).join('')}
+  ` : `<div class="empty-state" style="padding:20px 10px;">No supporting document was submitted for this case.<br><span class="text-xs">Cross-document verification was not performed.</span></div>`}
+</div> 
+  
+  <div class="card card-pad" style="margin-top:16px;">
+    <div class="section-title">Authorized source / API verification</div>
+    <div class="section-sub">Simulated lookups against connected authoritative registries (demo data).</div>
+    <div class="upload-grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));">
+      ${r.source.map(s=>`
+        <div class="card card-pad" style="border-style:dashed;">
+          <div class="flex justify-between items-center">
+            <span class="text-sm" style="font-weight:700;">${s.name}</span>
+            <span class="badge ${s.status==='Verified'?'badge-safe':s.status==='Mismatch'?'badge-danger':'badge-warn'}">${s.status}</span>
+          </div>
+          <div class="text-xs text-faint mono" style="margin-top:8px;">${s.ref}</div>
+        </div>`).join('')}
+    </div>
+  </div>`;
+}
+function checkRow(label, pass){
+  return `<div class="check-row">
+    <div class="check-left">
+      <div class="check-icon" style="background:${pass?'var(--safe-soft)':'var(--danger-soft)'};color:${pass?'var(--safe)':'var(--danger)'}">${icon(pass?'check':'x')}</div>
+      ${esc(label)}
+    </div>
+    <span class="badge ${pass?'badge-safe':'badge-danger'}">${pass?'Pass':'Flagged'}</span>
+  </div>`;
+}
+
+function fileMeta(file){
+  return new Promise(resolve=>{
+    const sizeLabel = file.size > 1024*1024 ? (file.size/1024/1024).toFixed(1)+' MB' : Math.round(file.size/1024)+' KB';
+    const meta = { file, name:file.name, sizeLabel, previewUrl:null };
+    if(file.type.startsWith('image/')){
+      meta.previewUrl = URL.createObjectURL(file);
+    }
+    resolve(meta);
+  });
+}
+
+function attachWizardHandlers(){
+  const w = state.wizard;
+  document.querySelectorAll('[data-file-input]').forEach(inp=>{
+    inp.addEventListener('change', async (e)=>{
+      const key = inp.dataset.fileInput;
+      const file = e.target.files[0];
+      if(!file) return;
+      const meta = await fileMeta(file);
+      w.files[key] = meta;
+      render();
+    });
+  });
+  const nameEl = document.getElementById('wName');
+  if(nameEl){
+    ['wName','wDob','wIdNumber'].forEach(id=>{
+      document.getElementById(id).addEventListener('input', e=>{
+        const map = { wName:'name', wDob:'dob', wIdNumber:'idNumber' };
+        w.applicant[map[id]] = e.target.value;
+      });
+    });
+    document.getElementById('wCountry').addEventListener('change', e=> w.applicant.country = e.target.value);
+    document.getElementById('wDocType').addEventListener('change', e=> w.docType = e.target.value);
+  }
+  const nextBtn = document.getElementById('wizardNextBtn');
+  if(nextBtn) nextBtn.addEventListener('click', startScreeningPipeline);
+
+  const approve = document.getElementById('wizardApprove');
+  const escalate = document.getElementById('wizardEscalate');
+  const reject = document.getElementById('wizardReject');
+  if(approve) approve.addEventListener('click', ()=> finalizeWizardCase('Approved'));
+  if(escalate) escalate.addEventListener('click', ()=> finalizeWizardCase('Escalated'));
+  if(reject) reject.addEventListener('click', ()=> finalizeWizardCase('Rejected'));
+}
+
+function startScreeningPipeline(){
+  const w = state.wizard;
+
+  if(!w.applicant.name || !w.applicant.idNumber){
+    toast('Please provide at least the applicant name and document number.', 'err');
+    return;
   }
 
-  return String(value)
-    .toLowerCase()
-    .trim()
-    .replace(/\s+/g, ' ');
+  if(!w.files.idFront){
+    toast('Please upload the front of the identity document.', 'err');
+    return;
+  }
+
+  w.docType = w.docType || DOC_TYPES[0];
+  w.step = 2;
+  w.stageIndex = -1;
+  render();
+  runNextStage();
 }
 
-
-function buildFrontendDocs(w){
-  return [
-    w.files.idFront
-      ? {
-          type:
-            w.docType ||
-            'Identity Document',
-          filename:
-            w.files.idFront.name,
-        }
-      : null,
-
-    w.files.idBack
-      ? {
-          type:
-            (
-              w.docType ||
-              'Identity Document'
-            ) + ' (back)',
-          filename:
-            w.files.idBack.name,
-        }
-      : null,
-
-    w.files.selfie
-      ? {
-          type: 'Selfie Photo',
-          filename:
-            w.files.selfie.name,
-        }
-      : null,
-
-    w.files.crossDoc
-      ? {
-          type: 'Supporting Document',
-          filename:
-            w.files.crossDoc.name,
-        }
-      : null,
-  ].filter(Boolean);
-}
 async function runNextStage(){
   const w = state.wizard;
 
@@ -1066,46 +2008,35 @@ async function runNextStage(){
   render();
 
   if(w.stageIndex >= PIPELINE_STAGES.length - 1){
-    setTimeout(async ()=>{
-      try{
-        w.result = await runRealBackendScreening(w);
+    try{
+      toast('Connecting to ShieldX analysis engine...', 'ok');
 
-        w.step = 3;
+      const result = await runRealBackendScreening(w);
 
-        render();
+      w.result = result;
+      w.step = 3;
 
-        toast(
-          'Analysis complete — real backend risk score generated.',
-          'ok'
-        );
+      render();
 
-      }catch(error){
+      toast('Analysis complete — risk score generated.', 'ok');
+    }catch(error){
+      console.error('ShieldX backend error:', error);
 
-        console.error(
-          'ShieldX backend verification failed:',
-          error
-        );
+      toast(
+        error.message || 'Unable to connect to ShieldX backend.',
+        'err'
+      );
 
-        w.step = 1;
-
-        render();
-
-        toast(
-          `Backend verification failed: ${error.message}`,
-          'err'
-        );
-      }
-    }, 750);
+      w.step = 1;
+      w.stageIndex = -1;
+      render();
+    }
 
     return;
   }
 
-  setTimeout(
-    runNextStage,
-    700
-  );
+  setTimeout(runNextStage, 700);
 }
-
 function finalizeWizardCase(status){
   const w = state.wizard;
   const note = document.getElementById('wizardReviewNote').value.trim();
