@@ -17,4 +17,4 @@ COPY frontend /app/frontend
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port $PORT"]
+CMD ["sh", "-c", "python -c 'import app.main' && uvicorn app.main:app --host 0.0.0.0 --port $PORT"]
