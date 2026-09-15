@@ -11,7 +11,7 @@ WORKDIR /app
 COPY backend/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
-COPY backend /app/app
+COPY backend /app
 COPY frontend /app/frontend
 
 ENV PYTHONUNBUFFERED=1
