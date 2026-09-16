@@ -30,4 +30,5 @@ def get_db():
 
 def init_db():
     from . import models  # noqa
+    from . import audit  # noqa
     Base.metadata.create_all(bind=engine)

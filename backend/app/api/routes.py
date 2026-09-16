@@ -7,6 +7,7 @@ from fastapi import (
     Depends,
     File,
     Form,
+    Header,
     HTTPException,
     UploadFile,
 )
@@ -14,8 +15,10 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..rbac import Role, get_current_role, require_permission
 from ..models import Screening, RiskFlag
 from ..schemas.schemas import VerificationResponse, HistoryItem
+from ..audit_service import create_audit_event
 from ..services import (
     preprocess,
     ocr_service,
@@ -245,6 +248,7 @@ async def verify_document(
     applicant_address: str | None = Form(None),
 
     db: Session = Depends(get_db),
+    role: Role = Depends(require_permission("screen")),
 ):
 
     request_id = str(uuid.uuid4())
@@ -703,11 +707,30 @@ async def verify_document(
             )
 
         # ====================================================
+        # AUDIT LOG
+        # ====================================================
+
+        create_audit_event(
+            db,
+            action="DOCUMENT_SCREENING",
+            result=risk["classification"],
+            request_id=request_id,
+            actor_id="system",
+            actor_role="SYSTEM",
+            document_hash=document_hash,
+            details=(
+                f"risk_score={risk['risk_score']};"
+                f"classification={risk['classification']}"
+            ),
+        )
+
+        # ====================================================
         # COMMIT
         # ====================================================
 
         db.commit()
 
+        return result
         return result
 
     # ========================================================
@@ -761,6 +784,9 @@ def screenings(
     limit: int = 20,
 
     db: Session = Depends(get_db),
+
+     role: Role = Depends(require_permission("review")),
+
 ):
 
     rows = (
@@ -804,6 +830,7 @@ def screenings(
     "/api/v1/dashboard/stats"
 )
 def dashboard_stats(
+    role: Role = Depends(require_permission("audit")),
     db: Session = Depends(get_db),
 ):
 
