@@ -633,9 +633,6 @@ async function runRealBackendScreening(w){
   '/api/v1/verify/document',
     {
       method:'POST',
-      headers: {
-      'X-ShieldX-Role': state.currentUser.role
-    },
       body:formData
     }
   );
