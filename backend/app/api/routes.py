@@ -16,8 +16,14 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..rbac import Role, get_current_role, require_permission
-from ..models import Screening, RiskFlag
-from ..schemas.schemas import VerificationResponse, HistoryItem
+from ..models import Screening, RiskFlag, User
+from ..schemas.schemas import (
+    VerificationResponse,
+    HistoryItem,
+    LoginRequest,
+    LoginResponse,
+)
+from ..core.security import verify_password, create_access_token
 from ..audit_service import create_audit_event
 from ..services import (
     preprocess,
@@ -34,6 +40,57 @@ from ..utils.file_utils import (
 
 
 router = APIRouter()
+
+
+# ============================================================
+# AUTHENTICATION
+# ============================================================
+
+@router.post("/api/v1/auth/login", response_model=LoginResponse)
+def login(
+    credentials: LoginRequest,
+    db: Session = Depends(get_db),
+):
+    user = (
+        db.query(User)
+        .filter(User.username == credentials.username)
+        .first()
+    )
+
+    if not user or not user.is_active:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid username or password.",
+        )
+
+    if not verify_password(
+        credentials.password,
+        user.password_hash,
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid username or password.",
+        )
+
+    access_token = create_access_token(
+        user_id=user.id,
+        username=user.username,
+        role=user.role,
+    )
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "name": user.name,
+            "role": user.role,
+            "is_active": user.is_active,
+        },
+    }
+
 
 BASE_DIR = Path(__file__).resolve().parents[3]
 UPLOAD_ROOT = BASE_DIR / "uploads"
@@ -820,7 +877,64 @@ def screenings(
 
         for r in rows
     ]
+# ============================================================
+# SCREENING DETAIL
+# ============================================================
 
+@router.get(
+    "/api/v1/screenings/{request_id}"
+)
+def screening_detail(
+    request_id: str,
+    db: Session = Depends(get_db),
+    role: Role = Depends(require_permission("review")),
+):
+    screening = (
+        db.query(Screening)
+        .filter(
+            Screening.request_id == request_id
+        )
+        .first()
+    )
+
+    if not screening:
+        raise HTTPException(
+            status_code=404,
+            detail="Screening not found."
+        )
+
+    flags = (
+        db.query(RiskFlag)
+        .filter(
+            RiskFlag.screening_id == screening.id
+        )
+        .all()
+    )
+
+    return {
+        "request_id": screening.request_id,
+        "status": "completed",
+        "filename": screening.filename,
+        "risk_score": screening.risk_score,
+        "classification": screening.classification,
+        "document_hash": screening.document_hash,
+        "ocr_confidence": screening.ocr_confidence,
+        "face_similarity": screening.face_similarity,
+        "anomaly_score": screening.anomaly_score,
+        "created_at": (
+            screening.created_at.isoformat()
+            if screening.created_at
+            else None
+        ),
+        "risk_flags": [
+            {
+                "type": flag.flag_type,
+                "severity": flag.severity,
+                "description": flag.description,
+            }
+            for flag in flags
+        ],
+    }
 
 # ============================================================
 # DASHBOARD STATISTICS

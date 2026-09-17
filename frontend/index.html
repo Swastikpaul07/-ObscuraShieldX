@@ -470,11 +470,45 @@ const FACTOR_DEFS = [
 ];
 
 const SOURCE_CHECKS_DEF = ['National ID Registry','Telecom KYC Database','Sanctions & Watchlist Screen','Address Verification Bureau'];
+/* ---------------------------- authenticated API helper ---------------------------- */
+async function shieldxFetch(url, options = {}) {
+  const token = localStorage.getItem('shieldx_access_token');
+
+  if (!token) {
+    throw new Error('Authentication required. Please sign in again.');
+  }
+
+  const headers = new Headers(options.headers || {});
+  headers.set('Authorization', `Bearer ${token}`);
+
+  const response = await fetch(url, {
+    ...options,
+    headers
+  });
+
+  if (response.status === 401) {
+    localStorage.removeItem('shieldx_access_token');
+    localStorage.removeItem('shieldx_user');
+
+    state.authed = false;
+    state.currentUser = null;
+    state.view = 'dashboard';
+
+    render();
+
+    throw new Error('Your session has expired. Please sign in again.');
+  }
+
+  return response;
+}
 
 /* ---------------------------- global application state ---------------------------- */
+const savedToken = localStorage.getItem('shieldx_access_token');
+const savedUser = localStorage.getItem('shieldx_user');
+
 const state = {
-  authed: false,
-  currentUser: null,
+  authed: !!savedToken && !!savedUser,
+  currentUser: savedUser ? JSON.parse(savedUser) : null,
   view: 'dashboard',
   caseFocusId: null,
   sidebarOpen: false,
@@ -634,8 +668,8 @@ async function runRealBackendScreening(w){
     {
       method:'POST',
       headers: {
-      'X-ShieldX-Role': state.currentUser.role
-    },
+  'Authorization': `Bearer ${localStorage.getItem('shieldx_access_token')}`
+},
       body:formData
     }
   );
@@ -1014,10 +1048,30 @@ function toast(msg, type){
    ROUTER / MAIN RENDER
    ========================================================================= */
 function navigate(view, params){
+  const perms = state.currentUser
+    ? ROLE_PERMISSIONS[state.currentUser.role]
+    : null;
+
+  // RBAC: only users with create permission can open New Screening
+  if(view === 'new-screening' && (!perms || !perms.create)){
+    toast(
+      'Access denied: your role cannot create new screenings.',
+      'err'
+    );
+    return;
+  }
+
   state.view = view;
   state.sidebarOpen = false;
-  if(params && params.caseId) state.caseFocusId = params.caseId;
-  if(view!=='new-screening') state.wizard = null;
+
+  if(params && params.caseId) {
+    state.caseFocusId = params.caseId;
+  }
+
+  if(view !== 'new-screening') {
+    state.wizard = null;
+  }
+
   window.scrollTo(0,0);
   render();
 }
@@ -1079,19 +1133,56 @@ function renderLogin(){
   </div>`;
 }
 function attachLoginHandlers(){
-  document.getElementById('loginForm').addEventListener('submit', e=>{
+  document.getElementById('loginForm').addEventListener('submit', async e=>{
     e.preventDefault();
-    const u = document.getElementById('loginUser').value.trim().toLowerCase();
-    const p = document.getElementById('loginPass').value;
-    const found = DEMO_USERS.find(x=>x.username===u && x.password===p);
-    if(found){ doLogin(found); }
-    else { document.getElementById('loginError').style.display='block'; }
-  });
-  document.querySelectorAll('.demo-cred-btn').forEach(btn=>{
-    btn.addEventListener('click', ()=>{
-      document.getElementById('loginUser').value = btn.dataset.user;
-      document.getElementById('loginPass').value = btn.dataset.pass;
-    });
+
+    const username = document.getElementById('loginUser').value.trim();
+    const password = document.getElementById('loginPass').value;
+    const errorBox = document.getElementById('loginError');
+    const submitBtn = e.target.querySelector('button[type="submit"]');
+
+    errorBox.style.display = 'none';
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Signing in...';
+
+    try {
+      const response = await fetch('/api/v1/auth/login', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          username,
+          password
+        })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data.detail || 'Invalid username or password.'
+        );
+      }
+
+      // Store the real JWT and authenticated user.
+      localStorage.setItem('shieldx_access_token', data.access_token);
+      localStorage.setItem(
+        'shieldx_user',
+        JSON.stringify(data.user)
+      );
+
+      doLogin(data.user);
+
+    } catch (error) {
+      errorBox.textContent =
+        error.message || 'Unable to sign in. Please try again.';
+      errorBox.style.display = 'block';
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = `${icon('lock')} Sign in securely`;
+    }
   });
 }
 function doLogin(user){
@@ -1103,10 +1194,19 @@ function doLogin(user){
   toast(`Welcome back, ${user.name.split(' ')[0]}.`, 'ok');
 }
 function doLogout(){
-  logAudit('Logout', `${state.currentUser.name} signed out.`);
+  if(state.currentUser){
+    logAudit('Logout', `${state.currentUser.name} signed out.`);
+  }
+
+  // Remove the real authentication session.
+  localStorage.removeItem('shieldx_access_token');
+  localStorage.removeItem('shieldx_user');
+
   state.authed = false;
   state.currentUser = null;
   state.userMenuOpen = false;
+  state.view = 'dashboard';
+
   render();
 }
 
@@ -1115,7 +1215,7 @@ function doLogout(){
    ========================================================================= */
 const NAV_ITEMS = [
   { id:'dashboard', label:'Dashboard', icon:'dashboard' },
-  { id:'new-screening', label:'New Screening', icon:'scan' },
+  { id:'new-screening', label:'New Screening', icon:'scan', perm:'create' },
   { id:'cases', label:'Case Management', icon:'cases' },
   { id:'audit', label:'Audit Logs', icon:'audit', perm:'viewAudit' },
   { id:'settings', label:'Settings', icon:'settings', perm:'manageSettings', altAllow:true },
@@ -1484,11 +1584,82 @@ function renderSettingsAbout(){
 /* =========================================================================
    BOOTSTRAP
    ========================================================================= */
-function initApp(){
-  state.cases = seedDemoCases();
-  logAudit('System Initialized', 'ShieldX workspace provisioned with demo case data.');
+   async function loadCasesFromBackend(){
+  try{
+    const response = await shieldxFetch('/api/v1/screenings?limit=100');
+
+    if(!response.ok){
+      const errorData = await response.json().catch(()=>({}));
+      throw new Error(
+        errorData.detail || `Failed to load screenings (${response.status})`
+      );
+    }
+
+    const screenings = await response.json();
+
+    state.cases = screenings.map(item => {
+      let riskLevel = 'Genuine';
+
+      if(item.risk_score >= 70){
+        riskLevel = 'High Risk';
+      }else if(item.risk_score >= 30){
+        riskLevel = 'Suspicious';
+      }
+
+      let status = 'Pending Review';
+
+      if(item.classification === 'HIGH_RISK'){
+        status = 'Pending Review';
+      }else if(item.classification === 'LOW_RISK'){
+        status = 'Approved';
+      }else if(item.classification === 'REVIEW_REQUIRED'){
+        status = 'Pending Review';
+      }
+
+      return {
+        id: item.request_id,
+        applicant: {
+          name: 'Backend Screening',
+          idNumber: ''
+        },
+        docType: item.filename || 'Document',
+        riskScore: item.risk_score,
+        riskLevel,
+        status,
+        analyst: state.currentUser?.name || 'Backend',
+        reviewer: null,
+        submitted: item.created_at
+      };
+    });
+
+    console.log(
+      `ShieldX: loaded ${state.cases.length} real screenings from backend.`
+    );
+
+  }catch(error){
+    console.error('ShieldX backend loading failed:', error);
+
+    // Keep the UI usable if the backend is temporarily unavailable.
+    state.cases = seedDemoCases();
+
+    toast(
+      'Could not load backend screenings. Showing demo data.',
+      'err'
+    );
+  }
+}
+async function initApp(){
+  logAudit('System Initialized', 'ShieldX workspace initialized.');
+
+  if(state.authed){
+    await loadCasesFromBackend();
+  }else{
+    state.cases = seedDemoCases();
+  }
+
   render();
 }
+
 initApp();
 
 function attachSettingsHandlers(){
@@ -1749,6 +1920,12 @@ function freshWizard(){
 }
 
 function renderNewScreening(){
+  const perms = ROLE_PERMISSIONS[state.currentUser.role];
+  if(!perms.create){
+    toast('Access denied: your role cannot create new screenings.', 'err');
+    navigate('dashboard');
+    return '';
+  }
   if(!state.wizard) state.wizard = freshWizard();
   const w = state.wizard;
   const stepLabels = ['Applicant & Documents','Running Analysis','Results & Decision'];
@@ -2080,6 +2257,7 @@ function finalizeWizardCase(status){
    DASHBOARD
    ========================================================================= */
 function renderDashboard(){
+  const perms = ROLE_PERMISSIONS[state.currentUser.role];
   const cases = state.cases;
   const total = cases.length;
   const genuine = cases.filter(c=>c.riskLevel==='Genuine').length;
@@ -2102,7 +2280,7 @@ function renderDashboard(){
       <h2 style="margin:0;font-size:21px;">Welcome back, ${state.currentUser.name.split(' ')[0]}</h2>
       <p class="text-muted text-sm" style="margin:4px 0 0;">Here's what's happening across your screening pipeline.</p>
     </div>
-    <button class="btn btn-primary" data-nav="new-screening">${icon('plus')} New Screening</button>
+   ${perms.create ? `<button class="btn btn-primary" data-nav="new-screening">${icon('plus')} New Screening</button>` : ''}
   </div>
 
   <div class="stat-grid">
@@ -2177,6 +2355,7 @@ function filteredCases(){
 }
 
 function renderCases(){
+  const perms = ROLE_PERMISSIONS[state.currentUser.role];
   const list = filteredCases();
   const f = state.filters;
   return `
@@ -2185,7 +2364,7 @@ function renderCases(){
       <h2 style="margin:0 0 4px;font-size:21px;">Case Management</h2>
       <p class="text-muted text-sm" style="margin:0;">${list.length} of ${state.cases.length} cases shown</p>
     </div>
-    <button class="btn btn-primary" data-nav="new-screening">${icon('plus')} New Screening</button>
+    ${perms.create ? `<button class="btn btn-primary" data-nav="new-screening">${icon('plus')} New Screening</button>` : ''}
   </div>
 
   <div class="card card-pad" style="margin-bottom:16px;">
@@ -2285,7 +2464,17 @@ function renderDashboardCharts(){
   if(srcCtx){
     const tally = {};
     SOURCE_CHECKS_DEF.forEach(s=>tally[s]={Verified:0,'Not Found':0,Mismatch:0});
-    state.cases.forEach(c=>{ c.analysis.source.forEach(s=>{ tally[s.name][s.status]++; }); });
+    state.cases.forEach(c=>{
+  if (!c.analysis || !Array.isArray(c.analysis.source)) return;
+
+  c.analysis.source.forEach(s=>{
+    if (!s || !s.name || !s.status) return;
+    if (!tally[s.name]) return;
+    if (tally[s.name][s.status] === undefined) return;
+
+    tally[s.name][s.status]++;
+  });
+});
     const labels = SOURCE_CHECKS_DEF.map(s=>s.replace(' Database','').replace(' Registry','').replace(' Screen','').replace(' Bureau',''));
     renderChartOrFallback('chartSources', 'sources', {
       type:'bar',

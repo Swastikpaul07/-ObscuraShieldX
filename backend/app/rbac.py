@@ -1,6 +1,11 @@
 from enum import Enum
 
-from fastapi import Depends, Header, HTTPException
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+from .core.security import decode_access_token
+
+security = HTTPBearer()
 
 
 class Role(str, Enum):
@@ -50,21 +55,32 @@ ROLE_PERMISSIONS = {
 
 
 def get_current_role(
-    x_shieldx_role: str = Header(...),
+    credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> Role:
     """
-    Resolve the ShieldX role supplied by the authenticated layer.
-
-    This header-based mechanism is for Phase 1B authorization testing.
-    It is NOT the final production authentication mechanism.
+    Resolve the ShieldX role from the authenticated JWT.
     """
 
     try:
-        return Role(x_shieldx_role)
-    except ValueError:
+        payload = decode_access_token(credentials.credentials)
+
+        role_value = payload.get("role")
+
+        if not role_value:
+            raise HTTPException(
+                status_code=401,
+                detail="Authentication token has no role.",
+            )
+
+        return Role(role_value)
+
+    except HTTPException:
+        raise
+
+    except Exception:
         raise HTTPException(
-            status_code=403,
-            detail="Invalid ShieldX role.",
+            status_code=401,
+            detail="Invalid or expired authentication token.",
         )
 
 
