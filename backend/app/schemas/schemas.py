@@ -53,3 +53,6 @@ class LoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: dict[str, Any]
+class LearningSampleReviewRequest(BaseModel):
+    label: str
+    notes: str | None = None

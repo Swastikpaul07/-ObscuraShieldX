@@ -1,7 +1,7 @@
 import shutil
 import uuid
 from pathlib import Path
-from datetime import datetime, timezone
+
 from fastapi import (
     APIRouter,
     Depends,
@@ -16,13 +16,12 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..rbac import Role, get_current_role, require_permission
-from ..models import Screening, RiskFlag, User, LearningSample
+from ..models import Screening, RiskFlag, User
 from ..schemas.schemas import (
     VerificationResponse,
     HistoryItem,
     LoginRequest,
     LoginResponse,
-    LearningSampleReviewRequest,
 )
 from ..core.security import verify_password, create_access_token
 from ..audit_service import create_audit_event
@@ -700,27 +699,6 @@ async def verify_document(
         db.flush()
 
         # ====================================================
-        # CONTINUOUS LEARNING - PRIVATE SAMPLE CAPTURE
-        # ====================================================
-
-        learning_sample = LearningSample(
-            screening_id=screening.id,
-            risk_score=risk["risk_score"],
-            classification=risk["classification"],
-            ocr_confidence=ocr_result.get(
-                "avg_confidence"
-            ),
-            face_similarity=face_result.get(
-                "similarity"
-            ),
-            anomaly_score=anomalies.get(
-                "anomaly_score"
-            ),
-        )
-
-        db.add(learning_sample)
-
-        # ====================================================
         # ANOMALY RISK FLAGS
         # ====================================================
 
@@ -957,158 +935,7 @@ def screening_detail(
             for flag in flags
         ],
     }
-# ============================================================
-# LEARNING SAMPLE REVIEW
-# ============================================================
 
-@router.get(
-    "/api/v1/learning-samples"
-)
-def learning_samples(
-    db: Session = Depends(get_db),
-    role: Role = Depends(require_permission("review")),
-):
-    """
-    Return learning samples waiting for human review.
-    """
-
-    samples = (
-        db.query(LearningSample)
-        .filter(
-            LearningSample.is_reviewed == False
-        )
-        .order_by(
-            LearningSample.created_at.desc()
-        )
-        .all()
-    )
-
-    return [
-        {
-            "id": sample.id,
-            "screening_id": sample.screening_id,
-            "risk_score": sample.risk_score,
-            "classification": sample.classification,
-            "ocr_confidence": sample.ocr_confidence,
-            "face_similarity": sample.face_similarity,
-            "anomaly_score": sample.anomaly_score,
-            "reviewer_label": sample.reviewer_label,
-            "reviewer_notes": sample.reviewer_notes,
-            "is_reviewed": sample.is_reviewed,
-            "is_training_eligible": sample.is_training_eligible,
-            "used_for_training": sample.used_for_training,
-            "created_at": (
-                sample.created_at.isoformat()
-                if sample.created_at
-                else None
-            ),
-        }
-        for sample in samples
-    ]
-
-
-# ============================================================
-# REVIEW A LEARNING SAMPLE
-# ============================================================
-
-@router.patch(
-    "/api/v1/learning-samples/{sample_id}/review"
-)
-def review_learning_sample(
-    sample_id: int,
-    review_data: LearningSampleReviewRequest,
-    db: Session = Depends(get_db),
-    role: Role = Depends(require_permission("review")),
-):
-    """
-    Human reviewer evaluates a learning sample.
-
-    Approved labels become eligible for future model training.
-    """
-
-    sample = (
-        db.query(LearningSample)
-        .filter(
-            LearningSample.id == sample_id
-        )
-        .first()
-    )
-
-    if not sample:
-        raise HTTPException(
-            status_code=404,
-            detail="Learning sample not found.",
-        )
-
-    if sample.is_reviewed:
-        raise HTTPException(
-            status_code=400,
-            detail="Learning sample has already been reviewed.",
-        )
-
-    # --------------------------------------------------------
-    # Validate reviewer label
-    # --------------------------------------------------------
-
-    allowed_labels = {
-        "VERIFIED",
-        "HIGH_RISK",
-        "MISMATCH_DETECTED",
-        "REVIEW_REQUIRED",
-    }
-
-    label = review_data.label.strip().upper()
-
-    if label not in allowed_labels:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Invalid reviewer label. "
-                "Allowed labels: "
-                "VERIFIED, HIGH_RISK, "
-                "MISMATCH_DETECTED, REVIEW_REQUIRED."
-            ),
-        )
-
-    # --------------------------------------------------------
-    # Update review information
-    # --------------------------------------------------------
-
-    sample.reviewer_label = label
-
-    sample.reviewer_notes = (
-        review_data.notes.strip()
-        if review_data.notes
-        else None
-    )
-
-    sample.is_reviewed = True
-
-    sample.is_training_eligible = True
-
-    sample.used_for_training = False
-
-    sample.reviewed_at = datetime.now(timezone.utc)
-
-    db.commit()
-
-    db.refresh(sample)
-
-    return {
-        "message": "Learning sample reviewed successfully.",
-        "sample_id": sample.id,
-        "screening_id": sample.screening_id,
-        "reviewer_label": sample.reviewer_label,
-        "reviewer_notes": sample.reviewer_notes,
-        "is_reviewed": sample.is_reviewed,
-        "is_training_eligible": sample.is_training_eligible,
-        "used_for_training": sample.used_for_training,
-        "reviewed_at": (
-            sample.reviewed_at.isoformat()
-            if sample.reviewed_at
-            else None
-        ),
-    }
 # ============================================================
 # DASHBOARD STATISTICS
 # ============================================================

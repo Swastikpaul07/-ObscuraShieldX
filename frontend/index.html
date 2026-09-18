@@ -957,7 +957,13 @@ function adaptBackendResultToUi(backend,w){
       flags:crossDocFlags
     },
 
-    source,
+     source,
+
+    voice:{
+      provided:false,
+      score:0,
+      classification:'Not Submitted'
+    },
 
     liveness:{
       score:livenessScore,
@@ -1101,36 +1107,59 @@ async function openCase(id){
         detail.risk_score >= 30 ? 'Suspicious' :
         'Genuine';
 
-      existingCase.analysis = {
-        fusion: {
-          score: detail.risk_score,
-          verdict: existingCase.riskLevel,
-          factors: [],
-          explanations: []
-        },
+      const backendForUi = {
+  ...detail,
 
-        document: {
-          ocr_confidence: detail.ocr_confidence,
-          extracted_fields: detail.extracted_fields || {},
-          raw_text: detail.raw_text || ''
-        },
+  request_id: detail.request_id,
 
-        face_verification: {
-          performed:
-            detail.face_similarity !== null &&
-            detail.face_similarity !== undefined,
-          similarity: detail.face_similarity,
-          notes:
-            detail.face_similarity !== null &&
-            detail.face_similarity !== undefined
-              ? 'Face verification result received from backend.'
-              : 'Selfie not provided.'
-        },
+  risk_score: detail.risk_score,
 
-        anomalies: detail.risk_flags || [],
+  classification: detail.classification,
 
-        cross_document: detail.cross_document || null
-      };
+  document: {
+    ocr_confidence: detail.ocr_confidence,
+    extracted_fields: detail.extracted_fields || {},
+    raw_text: detail.raw_text || ''
+  },
+
+  face_verification: {
+    performed:
+      detail.face_similarity !== null &&
+      detail.face_similarity !== undefined,
+
+    similarity: detail.face_similarity,
+
+    notes:
+      detail.face_similarity !== null &&
+      detail.face_similarity !== undefined
+        ? 'Face verification result received from backend.'
+        : 'Selfie not provided.'
+  },
+
+  anomalies:
+    detail.risk_flags ||
+    detail.anomalies ||
+    [],
+
+  cross_document:
+    detail.cross_document || {
+      performed: false,
+      score: null,
+      classification: 'Not Submitted',
+      matches: [],
+      mismatches: [],
+      unavailable: []
+    }
+};
+
+existingCase.analysis = adaptBackendResultToUi(
+  backendForUi,
+  {
+    applicant: existingCase.applicant || {},
+    docType: existingCase.docType || 'Identity Document',
+    files: {}
+  }
+);
 
       existingCase.auditTrail = [
         {
@@ -1698,7 +1727,7 @@ function renderSettingsAbout(){
     id: item.request_id,
 
     applicant: {
-      name: item.applicant_name || 'Backend Screening',
+     name: item.applicant_name || 'Applicant',
       dob: item.date_of_birth || '',
       idNumber: item.document_number || '',
       country: item.country || ''
@@ -1718,34 +1747,60 @@ function renderSettingsAbout(){
 
     reviewer: null,
 
-    analysis: {
-      fusion: {
-        score: item.risk_score,
-        verdict: riskLevel,
-        factors: [],
-        explanations: []
+        analysis: adaptBackendResultToUi(
+      {
+        request_id: item.request_id,
+        risk_score: item.risk_score,
+        classification: item.classification,
+
+        document: {
+          ocr_confidence: item.ocr_confidence,
+          extracted_fields: item.extracted_fields || {},
+          raw_text: item.raw_text || ''
+        },
+
+        face_verification: {
+          performed:
+            item.face_similarity !== null &&
+            item.face_similarity !== undefined,
+
+          similarity: item.face_similarity,
+
+          notes:
+            item.face_similarity !== null &&
+            item.face_similarity !== undefined
+              ? 'Face verification result received from backend.'
+              : 'Selfie not provided.'
+        },
+
+        anomalies: item.risk_flags || [],
+
+        cross_document:
+          item.cross_document || {
+            performed: false,
+            score: null,
+            classification: 'Not Submitted',
+            matches: [],
+            mismatches: [],
+            unavailable: []
+          }
       },
+      {
+        applicant: {
+          name: item.applicant_name || 'Backend Screening',
+          dob: item.date_of_birth || '',
+          idNumber: item.document_number || '',
+          country: item.country || ''
+        },
 
-      document: {
-        ocr_confidence: item.ocr_confidence,
-        extracted_fields: item.extracted_fields || {},
-        raw_text: item.raw_text || ''
-      },
+        docType:
+          item.document_type ||
+          item.filename ||
+          'Document',
 
-      face_verification: {
-        performed: item.face_similarity !== null &&
-                    item.face_similarity !== undefined,
-        similarity: item.face_similarity,
-        notes: item.face_similarity !== null &&
-               item.face_similarity !== undefined
-          ? 'Face verification result received from backend.'
-          : 'Selfie not provided.'
-      },
-
-      anomalies: item.risk_flags || [],
-
-      cross_document: item.cross_document || null
-    },
+        files: {}
+      }
+    ),
 
     auditTrail: [
       {
@@ -2351,7 +2406,7 @@ function finalizeWizardCase(status){
     toast('Please add a reviewer note explaining this decision.', 'err');
     return;
   }
-  const id = 'SX-'+(1000 + state.cases.length + Math.floor(Math.random()*90));
+  const id = w.result.backendResponse?.request_id || w.result.seed;
   const now = new Date();
   const newCase = {
     id,
