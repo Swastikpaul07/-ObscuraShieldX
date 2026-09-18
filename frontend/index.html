@@ -1075,7 +1075,85 @@ function navigate(view, params){
   window.scrollTo(0,0);
   render();
 }
-function openCase(id){ navigate('case-detail', { caseId:id }); }
+async function openCase(id){
+  try{
+    const response = await shieldxFetch(
+      `/api/v1/screenings/${encodeURIComponent(id)}`
+    );
+
+    if(!response.ok){
+      const errorData = await response.json().catch(()=>({}));
+      throw new Error(
+        errorData.detail || `Failed to load case (${response.status})`
+      );
+    }
+
+    const detail = await response.json();
+
+    const existingCase = state.cases.find(c => c.id === id);
+
+    if(existingCase){
+      existingCase.backendDetail = detail;
+
+      existingCase.riskScore = detail.risk_score;
+      existingCase.riskLevel =
+        detail.risk_score >= 70 ? 'High Risk' :
+        detail.risk_score >= 30 ? 'Suspicious' :
+        'Genuine';
+
+      existingCase.analysis = {
+        fusion: {
+          score: detail.risk_score,
+          verdict: existingCase.riskLevel,
+          factors: [],
+          explanations: []
+        },
+
+        document: {
+          ocr_confidence: detail.ocr_confidence,
+          extracted_fields: detail.extracted_fields || {},
+          raw_text: detail.raw_text || ''
+        },
+
+        face_verification: {
+          performed:
+            detail.face_similarity !== null &&
+            detail.face_similarity !== undefined,
+          similarity: detail.face_similarity,
+          notes:
+            detail.face_similarity !== null &&
+            detail.face_similarity !== undefined
+              ? 'Face verification result received from backend.'
+              : 'Selfie not provided.'
+        },
+
+        anomalies: detail.risk_flags || [],
+
+        cross_document: detail.cross_document || null
+      };
+
+      existingCase.auditTrail = [
+        {
+          time: new Date(detail.created_at),
+          actor: 'ShieldX Engine',
+          role: 'System',
+          action: 'Screening Completed',
+          note: `Backend screening completed with risk score ${detail.risk_score}.`
+        }
+      ];
+    }
+
+    navigate('case-detail', { caseId:id });
+
+  }catch(error){
+    console.error('ShieldX case detail loading failed:', error);
+
+    toast(
+      error.message || 'Unable to load case details from backend.',
+      'err'
+    );
+  }
+}
 
 function render(){
   const app = document.getElementById('app');
@@ -1598,39 +1676,88 @@ function renderSettingsAbout(){
     const screenings = await response.json();
 
     state.cases = screenings.map(item => {
-      let riskLevel = 'Genuine';
+  let riskLevel = 'Genuine';
 
-      if(item.risk_score >= 70){
-        riskLevel = 'High Risk';
-      }else if(item.risk_score >= 30){
-        riskLevel = 'Suspicious';
+  if(item.risk_score >= 70){
+    riskLevel = 'High Risk';
+  }else if(item.risk_score >= 30){
+    riskLevel = 'Suspicious';
+  }
+
+  let status = 'Pending Review';
+
+  if(item.classification === 'LOW_RISK'){
+    status = 'Approved';
+  }else if(item.classification === 'HIGH_RISK'){
+    status = 'Pending Review';
+  }else if(item.classification === 'REVIEW_REQUIRED'){
+    status = 'Pending Review';
+  }
+
+  return {
+    id: item.request_id,
+
+    applicant: {
+      name: item.applicant_name || 'Backend Screening',
+      dob: item.date_of_birth || '',
+      idNumber: item.document_number || '',
+      country: item.country || ''
+    },
+
+    docType: item.document_type || item.filename || 'Document',
+
+    submitted: new Date(item.created_at),
+
+    status,
+
+    riskScore: item.risk_score,
+
+    riskLevel,
+
+    analyst: 'ShieldX Engine',
+
+    reviewer: null,
+
+    analysis: {
+      fusion: {
+        score: item.risk_score,
+        verdict: riskLevel,
+        factors: [],
+        explanations: []
+      },
+
+      document: {
+        ocr_confidence: item.ocr_confidence,
+        extracted_fields: item.extracted_fields || {},
+        raw_text: item.raw_text || ''
+      },
+
+      face_verification: {
+        performed: item.face_similarity !== null &&
+                    item.face_similarity !== undefined,
+        similarity: item.face_similarity,
+        notes: item.face_similarity !== null &&
+               item.face_similarity !== undefined
+          ? 'Face verification result received from backend.'
+          : 'Selfie not provided.'
+      },
+
+      anomalies: item.risk_flags || [],
+
+      cross_document: item.cross_document || null
+    },
+
+    auditTrail: [
+      {
+        time: new Date(item.created_at),
+        actor: 'ShieldX Engine',
+        role: 'System',
+        action: 'Screening Completed',
+        note: `Backend screening completed with risk score ${item.risk_score}.`
       }
-
-      let status = 'Pending Review';
-
-      if(item.classification === 'HIGH_RISK'){
-        status = 'Pending Review';
-      }else if(item.classification === 'LOW_RISK'){
-        status = 'Approved';
-      }else if(item.classification === 'REVIEW_REQUIRED'){
-        status = 'Pending Review';
-      }
-
-      return {
-        id: item.request_id,
-        applicant: {
-          name: 'Backend Screening',
-          idNumber: ''
-        },
-        docType: item.filename || 'Document',
-        riskScore: item.risk_score,
-        riskLevel,
-        status,
-        analyst: state.currentUser?.name || 'Backend',
-        reviewer: null,
-        submitted: item.created_at
-      };
-    });
+    ]
+  };
+});
 
     console.log(
       `ShieldX: loaded ${state.cases.length} real screenings from backend.`
@@ -1639,7 +1766,6 @@ function renderSettingsAbout(){
   }catch(error){
     console.error('ShieldX backend loading failed:', error);
 
-    // Keep the UI usable if the backend is temporarily unavailable.
     state.cases = seedDemoCases();
 
     toast(
@@ -2089,8 +2215,9 @@ function renderAnalysisSections(r){
     <div class="section-sub">Classification: <strong>${r.crossDoc.classification}</strong> · Score ${r.crossDoc.score}%</div>
     ${r.crossDoc.flags.map(fl=>checkRow(fl.name, fl.pass)).join('')}
   ` : `<div class="empty-state" style="padding:20px 10px;">No supporting document was submitted for this case.<br><span class="text-xs">Cross-document verification was not performed.</span></div>`}
-</div> 
-  
+</div>
+  </div>
+
   <div class="card card-pad" style="margin-top:16px;">
     <div class="section-title">Authorized source / API verification</div>
     <div class="section-sub">Simulated lookups against connected authoritative registries (demo data).</div>
