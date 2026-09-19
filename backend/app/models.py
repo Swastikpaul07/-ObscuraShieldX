@@ -185,3 +185,8 @@ class ModelVersion(Base):
         DateTime,
         nullable=True,
     )
+
+    artifact_path: Mapped[str | None] = mapped_column(
+        String(512),
+        nullable=True,
+    )

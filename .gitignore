@@ -9,3 +9,4 @@ uploads/
 .vscode/
 .idea/
 .DS_Store
+backend/models/*.joblib

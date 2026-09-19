@@ -16,7 +16,13 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..rbac import Role, get_current_role, require_permission
-from ..models import Screening, RiskFlag, User, LearningSample
+from ..models import (
+    Screening,
+    RiskFlag,
+    User,
+    LearningSample,
+    ModelVersion,
+)
 from ..schemas.schemas import (
     VerificationResponse,
     HistoryItem,
@@ -33,6 +39,17 @@ from ..services import (
     face_service,
     risk_engine,
     hash_service,
+)
+from ..services.model_training_service import (
+    create_model_candidate,
+)
+
+from ..services.model_inference_service import (
+    ModelInferenceError,
+    predict_with_active_model,
+)
+from ..services.training_service import (
+    TrainingDataError,
 )
 from ..utils.file_utils import (
     allowed_file,
@@ -1174,4 +1191,329 @@ def dashboard_stats(
         "review_required": review,
 
         "low_risk": low,
+    }
+# ============================================================
+# MODEL TRAINING
+# ============================================================
+
+@router.post(
+    "/api/v1/training/run"
+)
+def run_training(
+    role: Role = Depends(
+        require_permission("admin")
+    ),
+    db: Session = Depends(get_db),
+):
+    """
+    Train a new candidate model from reviewed learning samples.
+
+    Training is protected by the admin permission and will never
+    automatically activate the resulting model.
+    """
+
+    try:
+
+        result = create_model_candidate(
+            db
+        )
+
+        # Do not expose the actual sklearn model object
+        # through the API response.
+        result.pop(
+            "model",
+            None,
+        )
+
+        db.commit()
+
+        return {
+            "status": "candidate_created",
+            "message": (
+                "Training completed successfully. "
+                "The model remains a candidate and "
+                "has not been activated."
+            ),
+            **result,
+        }
+
+    except TrainingDataError as exc:
+
+        db.rollback()
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    except Exception as exc:
+
+        db.rollback()
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Training failed: {exc}"
+            ),
+        ) from exc
+    # ============================================================
+    # MODEL ACTIVATION
+    # ============================================================
+
+@router.post(
+    "/api/v1/training/models/{model_version_id}/activate"
+)
+def activate_model(
+    model_version_id: int,
+    role: Role = Depends(
+        require_permission("admin")
+    ),
+    db: Session = Depends(get_db),
+):
+    """
+    Activate an approved candidate model.
+
+    Only administrators can activate a model.
+
+    The currently active model is retired before the
+    selected candidate becomes active.
+    """
+
+    # ---------------------------------------------------------
+    # FIND CANDIDATE MODEL
+    # ---------------------------------------------------------
+
+    model_version = (
+        db.query(ModelVersion)
+        .filter(
+            ModelVersion.id == model_version_id
+        )
+        .first()
+    )
+
+    if not model_version:
+        raise HTTPException(
+            status_code=404,
+            detail="Model version not found.",
+        )
+
+    # ---------------------------------------------------------
+    # VERIFY MODEL IS A CANDIDATE
+    # ---------------------------------------------------------
+
+    if model_version.status != "candidate":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Only candidate models can be activated."
+            ),
+        )
+
+    # ---------------------------------------------------------
+    # VERIFY ARTIFACT EXISTS
+    # ---------------------------------------------------------
+
+    if not model_version.artifact_path:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Model candidate has no artifact path."
+            ),
+        )
+
+    artifact_path = Path(
+        model_version.artifact_path
+    )
+
+    if not artifact_path.exists():
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Model artifact does not exist."
+            ),
+        )
+
+    # ---------------------------------------------------------
+    # RETIRE CURRENT ACTIVE MODEL
+    # ---------------------------------------------------------
+
+    active_models = (
+        db.query(ModelVersion)
+        .filter(
+            ModelVersion.status == "active"
+        )
+        .all()
+    )
+
+    for active_model in active_models:
+
+        active_model.status = "retired"
+
+    # ---------------------------------------------------------
+    # ACTIVATE SELECTED MODEL
+    # ---------------------------------------------------------
+
+    model_version.status = "active"
+
+    model_version.activated_at = datetime.now(
+        timezone.utc
+    )
+
+    db.commit()
+
+    db.refresh(
+        model_version
+    )
+
+    return {
+        "status": "active",
+        "message": (
+            "Model activated successfully."
+        ),
+        "model_version_id": model_version.id,
+        "version": model_version.version,
+        "model_type": model_version.model_type,
+        "artifact_path": model_version.artifact_path,
+        "activated_at": model_version.activated_at,
+    }
+# ============================================================
+# MODEL ROLLBACK
+# ============================================================
+
+@router.post(
+    "/api/v1/training/models/{model_version_id}/rollback"
+)
+def rollback_model(
+    model_version_id: int,
+    role: Role = Depends(
+        require_permission("admin")
+    ),
+    db: Session = Depends(get_db),
+):
+    """
+    Roll back from the selected active model to the
+    most recently activated retired model.
+
+    Only administrators can perform rollback.
+    """
+
+    # ---------------------------------------------------------
+    # FIND CURRENT MODEL
+    # ---------------------------------------------------------
+
+    current_model = (
+        db.query(ModelVersion)
+        .filter(
+            ModelVersion.id == model_version_id
+        )
+        .first()
+    )
+
+    if not current_model:
+        raise HTTPException(
+            status_code=404,
+            detail="Model version not found.",
+        )
+
+    # ---------------------------------------------------------
+    # MODEL MUST CURRENTLY BE ACTIVE
+    # ---------------------------------------------------------
+
+    if current_model.status != "active":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Only the currently active model "
+                "can be rolled back."
+            ),
+        )
+
+    # ---------------------------------------------------------
+    # FIND MOST RECENT RETIRED MODEL
+    # ---------------------------------------------------------
+
+    previous_model = (
+        db.query(ModelVersion)
+        .filter(
+            ModelVersion.status == "retired",
+            ModelVersion.activated_at.isnot(None),
+        )
+        .order_by(
+            ModelVersion.activated_at.desc()
+        )
+        .first()
+    )
+
+    if not previous_model:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No previous retired model is available "
+                "for rollback."
+            ),
+        )
+
+    # ---------------------------------------------------------
+    # VERIFY PREVIOUS ARTIFACT EXISTS
+    # ---------------------------------------------------------
+
+    if not previous_model.artifact_path:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Previous model has no artifact path."
+            ),
+        )
+
+    previous_artifact = Path(
+        previous_model.artifact_path
+    )
+
+    if not previous_artifact.exists():
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Previous model artifact does not exist."
+            ),
+        )
+
+    # ---------------------------------------------------------
+    # RETIRE CURRENT MODEL
+    # ---------------------------------------------------------
+
+    current_model.status = "retired"
+
+    # ---------------------------------------------------------
+    # RESTORE PREVIOUS MODEL
+    # ---------------------------------------------------------
+
+    previous_model.status = "active"
+
+    previous_model.activated_at = datetime.now(
+        timezone.utc
+    )
+
+    db.commit()
+
+    db.refresh(
+        previous_model
+    )
+
+    return {
+        "status": "rollback_completed",
+        "message": (
+            "Model rollback completed successfully."
+        ),
+        "active_model_version_id": (
+            previous_model.id
+        ),
+        "active_version": (
+            previous_model.version
+        ),
+        "artifact_path": (
+            previous_model.artifact_path
+        ),
+        "activated_at": (
+            previous_model.activated_at
+        ),
     }
