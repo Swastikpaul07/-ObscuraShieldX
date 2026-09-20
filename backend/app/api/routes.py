@@ -1,3 +1,4 @@
+import joblib
 import shutil
 import uuid
 from pathlib import Path
@@ -665,7 +666,7 @@ async def verify_document(
             ],
 
             "learned_model": learned_prediction,
-            
+
             "document": {
 
                 "ocr_confidence": ocr_result.get(
@@ -1355,7 +1356,35 @@ def activate_model(
 
     artifact_path = Path(
         model_version.artifact_path
-    )
+    ).resolve()
+
+    # ---------------------------------------------------------
+    # SECURITY: ARTIFACT MUST STAY INSIDE MODEL DIRECTORY
+    # ---------------------------------------------------------
+
+    model_directory = (
+        Path(__file__)
+        .resolve()
+        .parents[2]
+        / "models"
+    ).resolve()
+
+    try:
+        artifact_path.relative_to(
+            model_directory
+        )
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Model artifact is outside the "
+                "ShieldX model directory."
+            ),
+        )
+
+    # ---------------------------------------------------------
+    # VERIFY ARTIFACT EXISTS AND IS A FILE
+    # ---------------------------------------------------------
 
     if not artifact_path.exists():
         raise HTTPException(
@@ -1364,6 +1393,31 @@ def activate_model(
                 "Model artifact does not exist."
             ),
         )
+
+    if not artifact_path.is_file():
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Model artifact is not a file."
+            ),
+        )
+
+    # ---------------------------------------------------------
+    # VERIFY MODEL CAN ACTUALLY BE LOADED
+    # ---------------------------------------------------------
+
+    try:
+        joblib.load(
+            artifact_path
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Model artifact could not be loaded: "
+                f"{exc}"
+            ),
+        ) from exc
 
     # ---------------------------------------------------------
     # RETIRE CURRENT ACTIVE MODEL
