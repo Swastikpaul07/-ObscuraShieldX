@@ -6,9 +6,28 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: sqlite:////app/shieldx.db
+      DATABASE_URL: postgresql+psycopg://shieldx:shieldx_password@postgres:5432/shieldx
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-60}
+      SARVAM_API_KEY: ${SARVAM_API_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: shieldx
+      POSTGRES_USER: shieldx
+      POSTGRES_PASSWORD: shieldx_password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shieldx -d shieldx"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     volumes:
-      - shieldx_data:/app
+      - postgres_data:/var/lib/postgresql
 
 volumes:
   shieldx_data:
+  postgres_data:
