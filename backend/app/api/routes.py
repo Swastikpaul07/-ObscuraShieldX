@@ -617,6 +617,36 @@ async def verify_document(
         )
 
         # ====================================================
+        # ACTIVE ML MODEL INFERENCE
+        # ====================================================
+
+        learned_prediction = None
+
+        try:
+            learned_prediction = predict_with_active_model(
+                db=db,
+                risk_score=risk["risk_score"],
+                ocr_confidence=ocr_result.get(
+                    "avg_confidence"
+                ),
+                face_similarity=face_result.get(
+                    "similarity"
+                ),
+                anomaly_score=anomalies.get(
+                    "anomaly_score"
+                ),
+            )
+
+        except ModelInferenceError as exc:
+            # The learned model is an optional enhancement.
+            # Never allow a model-loading/prediction problem
+            # to break the primary ShieldX screening pipeline.
+            learned_prediction = {
+                "status": "unavailable",
+                "reason": str(exc),
+            }
+
+        # ====================================================
         # API RESULT
         # ====================================================
 
@@ -634,6 +664,8 @@ async def verify_document(
                 "classification"
             ],
 
+            "learned_model": learned_prediction,
+            
             "document": {
 
                 "ocr_confidence": ocr_result.get(
