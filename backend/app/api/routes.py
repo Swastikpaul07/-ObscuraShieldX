@@ -16,7 +16,12 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..rbac import Role, get_current_role, require_permission
+from ..rbac import (
+    Role,
+    get_current_role,
+    get_current_user_id,
+    require_permission,
+)
 from ..models import (
     Screening,
     RiskFlag,
@@ -1069,6 +1074,7 @@ def review_learning_sample(
     review_data: LearningSampleReviewRequest,
     db: Session = Depends(get_db),
     role: Role = Depends(require_permission("review")),
+    reviewer_id: int = Depends(get_current_user_id),
 ):
     """
     Human reviewer evaluates a learning sample.
@@ -1083,6 +1089,20 @@ def review_learning_sample(
         )
         .first()
     )
+    reviewer = (
+        db.query(User)
+        .filter(
+            User.id == reviewer_id,
+            User.is_active.is_(True),
+        )
+        .first()
+    )
+
+    if not reviewer:
+        raise HTTPException(
+            status_code=401,
+            detail="Authenticated reviewer account is not active.",
+        )
 
     if not sample:
         raise HTTPException(
@@ -1125,6 +1145,8 @@ def review_learning_sample(
     # --------------------------------------------------------
 
     sample.reviewer_label = label
+
+    sample.reviewer_id = reviewer.id
 
     sample.reviewer_notes = (
         review_data.notes.strip()

@@ -82,7 +82,42 @@ def get_current_role(
             status_code=401,
             detail="Invalid or expired authentication token.",
         )
+def get_current_user_id(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> int:
+    """
+    Resolve the authenticated ShieldX user's database ID from the JWT.
+    """
 
+    try:
+        payload = decode_access_token(
+            credentials.credentials
+        )
+
+        user_id = payload.get("sub")
+
+        if user_id is None:
+            raise HTTPException(
+                status_code=401,
+                detail="Authentication token has no user ID.",
+            )
+
+        return int(user_id)
+
+    except HTTPException:
+        raise
+
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication token has an invalid user ID.",
+        )
+
+    except Exception:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or expired authentication token.",
+        )
 
 def require_permission(permission: str):
     """

@@ -35,6 +35,71 @@ class TrainingDataError(Exception):
     """Raised when the training dataset is not suitable for training."""
 
 
+def validate_feature_label_consistency(
+    samples: list[LearningSample],
+) -> None:
+    """
+    Reject training data when identical feature vectors have
+    contradictory reviewer labels.
+    """
+
+    feature_labels: dict[
+        tuple[float, float, float, float],
+        set[str],
+    ] = {}
+
+    for sample in samples:
+        feature_vector = (
+            float(sample.risk_score),
+            float(
+                sample.ocr_confidence
+                if sample.ocr_confidence is not None
+                else 0.0
+            ),
+            float(
+                sample.face_similarity
+                if sample.face_similarity is not None
+                else 0.0
+            ),
+            float(
+                sample.anomaly_score
+                if sample.anomaly_score is not None
+                else 0.0
+            ),
+        )
+
+        label = sample.reviewer_label
+
+        if label is None:
+            continue
+
+        feature_labels.setdefault(
+            feature_vector,
+            set(),
+        ).add(label)
+
+    contradictory_groups = [
+        (features, labels)
+        for features, labels in feature_labels.items()
+        if len(labels) > 1
+    ]
+
+    if contradictory_groups:
+        details = "; ".join(
+            (
+                f"features={features}, "
+                f"labels={sorted(labels)}"
+            )
+            for features, labels in contradictory_groups[:5]
+        )
+
+        raise TrainingDataError(
+            "Training data contains contradictory labels "
+            "for identical feature vectors. "
+            f"Conflicting groups: {details}"
+        )
+
+
 def build_training_dataset(
     db: Session,
     minimum_samples: int = MINIMUM_SAMPLES,
@@ -98,6 +163,9 @@ def build_training_dataset(
             f"Classes requiring more samples: "
             f"{', '.join(insufficient_classes)}."
         )
+    validate_feature_label_consistency(
+        samples
+    )
 
     return TrainingDataset(
         samples=samples

@@ -10,6 +10,7 @@ from ..models import ModelVersion
 from .training_service import (
     TrainingDataError,
     build_training_dataset,
+    validate_feature_label_consistency,
     train_model,
 )
 
@@ -41,9 +42,16 @@ def create_model_candidate(
     dataset = build_training_dataset(db)
 
     # ---------------------------------------------------------
-    # TRAIN + VALIDATE
+    # VALIDATE FEATURE-LABEL CONSISTENCY
     # ---------------------------------------------------------
 
+    validate_feature_label_consistency(
+        dataset.samples
+    )
+
+    # ---------------------------------------------------------
+    # TRAIN + VALIDATE
+    # ---------------------------------------------------------
     training_result = train_model(
         dataset
     )
