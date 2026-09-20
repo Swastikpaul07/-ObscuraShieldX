@@ -27,10 +27,12 @@ def verify_password(password: str, hashed_password: str) -> bool:
 # JWT authentication
 # ---------------------------------------------------------------------------
 
-JWT_SECRET_KEY = os.getenv(
-    "JWT_SECRET_KEY",
-    "shieldx-development-secret-change-this-before-production",
-)
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+
+if not JWT_SECRET_KEY:
+    raise RuntimeError(
+        "JWT_SECRET_KEY is not configured."
+    )
 
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "60"))
