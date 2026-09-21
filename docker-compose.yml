@@ -13,6 +13,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    volumes:
+      - ./backend/models:/app/models
 
   postgres:
     image: postgres:18
@@ -29,5 +31,4 @@ services:
       - postgres_data:/var/lib/postgresql
 
 volumes:
-  shieldx_data:
   postgres_data:

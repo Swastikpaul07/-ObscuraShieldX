@@ -27,6 +27,7 @@ class VerificationResponse(BaseModel):
     status: str
     risk_score: int
     classification: str
+    learned_model: Optional[dict[str, Any]] = None
     document: DocumentInfo
     face_verification: FaceVerification
     cross_document: CrossDocumentVerification
