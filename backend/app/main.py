@@ -6,7 +6,7 @@ from fastapi.staticfiles import StaticFiles
 from .api.routes import router as api_router
 from .database import init_db
 
-BASE_DIR = Path(__file__).resolve().parents[2]
+BASE_DIR = Path(__file__).resolve().parents[1]
 FRONTEND_DIR = BASE_DIR / "frontend"
 
 app = FastAPI(
