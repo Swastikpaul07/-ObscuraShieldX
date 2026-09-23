@@ -334,6 +334,23 @@ async def verify_document(
 
     request_id = str(uuid.uuid4())
 
+    # Validate applicant date of birth
+    if applicant_dob:
+        from datetime import date
+        try:
+            dob = date.fromisoformat(applicant_dob)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid date of birth."
+            )
+
+        if dob > date.today():
+            raise HTTPException(
+                status_code=400,
+                detail="Date of birth cannot be in the future."
+            )
+        
     # --------------------------------------------------------
     # Validate primary document
     # --------------------------------------------------------

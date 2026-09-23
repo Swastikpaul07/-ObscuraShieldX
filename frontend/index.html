@@ -2149,7 +2149,7 @@ function renderWizardStep1(w){
     <div class="section-sub">Enter the information exactly as it appears on the primary identity document.</div>
     <div class="field-row">
       <div class="field"><label class="field-label">Full name</label><input class="input" id="wName" value="${esc(a.name)}" placeholder="e.g. Aisha Khan"></div>
-      <div class="field"><label class="field-label">Date of birth</label><input class="input" id="wDob" placeholder="e.g. Jan 12, 1994" value="${esc(a.dob)}"></div>
+      <div class="field"><label class="field-label">Date of birth</label><input class="input" id="wDob" type="date" value="${esc(a.dob)}" max="${new Date().toISOString().split('T')[0]}">
     </div>
     <div class="field-row">
       <div class="field"><label class="field-label">Document number</label><input class="input" id="wIdNumber" placeholder="e.g. X1234567" value="${esc(a.idNumber)}"></div>
