@@ -456,7 +456,7 @@ const PERMISSION_LABELS = [
 ];
 
 /* ---------------------------- document / risk vocab ---------------------------- */
-const DOC_TYPES = ['Passport','Driver\u2019s License','National ID Card','Residence Permit'];
+const DOC_TYPES = ['Passport','Driver\u2019s License','Aadhaar Card','Voter ID','PAN Card','Residence Permit'];
 const NAMES = ['Rahul Mehta','Aisha Khan','Chen Wei','Maria Gomez','John Carter','Fatima Noor','David Kim','Olivia Brown','Ivan Petrov','Sara Ali','Grace Nakato','Tomás Rivera','Emily Chen','Noah Williams','Yuki Tanaka','Ahmed Hassan','Sofia Rossi','Liam O\u2019Connor','Nadia Osei','Mateus Silva'];
 const COUNTRIES = ['United States','India','United Kingdom','Canada','Germany','Brazil','Nigeria','Japan','UAE','Australia'];
 
@@ -1360,10 +1360,10 @@ function renderShell(){
           <div class="topbar-title">${VIEW_TITLES[state.view]||''}</div>
         </div>
         <div class="topbar-right">
-          <button class="btn-icon btn-ghost" title="Notifications" style="position:relative;">
-            ${icon('bell')}
-            ${state.cases.filter(c=>c.status==='Pending Review').length ? '<span style="position:absolute;top:6px;right:6px;width:7px;height:7px;border-radius:50%;background:var(--danger);"></span>' : ''}
-          </button>
+          <button class="btn-icon btn-ghost" id="notificationBtn" title="Notifications" style="position:relative;">
+  ${icon('bell')}
+  ${state.cases.filter(c=>c.status==='Pending Review').length ? '<span style="position:absolute;top:6px;right:6px;width:7px;height:7px;border-radius:50%;background:var(--danger);"></span>' : ''}
+    </button>
           <div class="user-chip" id="userChipBtn">
             <div class="avatar">${initials(state.currentUser.name)}</div>
             <div>
@@ -1407,6 +1407,10 @@ function attachShellHandlers(){
   if(scrim) scrim.addEventListener('click', ()=>{ state.sidebarOpen = false; render(); });
   const chip = document.getElementById('userChipBtn');
   if(chip) chip.addEventListener('click', (e)=>{ e.stopPropagation(); state.userMenuOpen = !state.userMenuOpen; render(); });
+    const notificationBtn = document.getElementById('notificationBtn');
+  if(notificationBtn) notificationBtn.addEventListener('click', ()=>{
+    toast('No new notifications.', 'ok');
+  });
   const logoutBtn = document.getElementById('logoutBtn');
   if(logoutBtn) logoutBtn.addEventListener('click', doLogout);
   document.addEventListener('click', function outsideClose(e){
@@ -2135,14 +2139,118 @@ function renderNewScreening(){
 function renderWizardStep1(w){
   const a = w.applicant;
   function uploadBox(key, title, sub, iconName){
-    const f = w.files[key];
-    return `<label class="upload-box ${f?'filled':''}" data-upload="${key}">
-      <input type="file" accept="${key==='selfie' ? 'image/*' : 'image/*,.pdf,application/pdf'}" data-file-input="${key}">
-      ${f && f.previewUrl ? `<img class="upload-thumb" src="${f.previewUrl}">` : `<div style="color:${f?'var(--safe)':'var(--text-faint)'}">${icon(f?'check':iconName)}</div>`}
-      <div class="up-title">${f ? esc(f.name) : title}</div>
-      <div class="up-sub">${f ? (f.sizeLabel+' · uploaded') : sub}</div>
-    </label>`;
+  const f = w.files[key];
+
+  return `<div class="upload-box ${f?'filled':''}" data-upload="${key}">
+    <input type="file"
+      accept="${key==='selfie' ? 'image/*' : 'image/*,.pdf,application/pdf'}"
+      ${key==='selfie' ? 'capture="user"' : ''}
+      data-file-input="${key}"
+      style="display:none;">
+
+    ${f && f.previewUrl
+      ? `<img class="upload-thumb" src="${f.previewUrl}">`
+      : `<div style="color:${f?'var(--safe)':'var(--text-faint)'}">${icon(f?'check':iconName)}</div>`}
+
+    <div class="up-title">${f ? esc(f.name) : title}</div>
+    <div class="up-sub">${f ? (f.sizeLabel+' · uploaded') : sub}</div>
+
+    ${key === 'selfie' && !f ? `
+      <div style="display:flex;gap:8px;justify-content:center;margin-top:10px;">
+        <button type="button" class="btn btn-secondary" data-camera-selfie>
+          📷 Use Camera
+        </button>
+        <button type="button" class="btn btn-secondary" data-file-selfie>
+          📁 Choose File
+        </button>
+      </div>
+    ` : ''}
+  </div>`;
+}
+document.addEventListener('click', async (e) => {
+  const cameraBtn = e.target.closest('[data-camera-selfie]');
+  if (!cameraBtn) return;
+
+  const input = document.querySelector('[data-file-input="selfie"]');
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'user' },
+      audio: false
+    });
+
+    const modal = document.createElement('div');
+
+    modal.style.cssText =
+      'position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;';
+
+    modal.innerHTML = `
+      <div style="background:white;padding:20px;border-radius:14px;text-align:center;max-width:500px;width:100%;">
+        <h3>Take Selfie / Liveness Photo</h3>
+        <video id="selfieCamera"
+          autoplay
+          playsinline
+          style="width:100%;border-radius:10px;margin:10px 0;">
+        </video>
+
+        <button type="button" id="captureSelfie" class="btn btn-primary">
+          📷 Capture Photo
+        </button>
+
+        <button type="button" id="closeCamera" class="btn btn-secondary">
+          Cancel
+        </button>
+      </div>
+    `;
+
+    document.body.appendChild(modal);
+
+    const video = document.getElementById('selfieCamera');
+    video.srcObject = stream;
+
+    document.getElementById('closeCamera').onclick = () => {
+      stream.getTracks().forEach(track => track.stop());
+      modal.remove();
+    };
+
+    document.getElementById('captureSelfie').onclick = () => {
+      const canvas = document.createElement('canvas');
+
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+
+      canvas.getContext('2d').drawImage(
+        video,
+        0,
+        0,
+        canvas.width,
+        canvas.height
+      );
+
+      canvas.toBlob(blob => {
+        const file = new File(
+          [blob],
+          'selfie-camera.jpg',
+          { type: 'image/jpeg' }
+        );
+
+        const dataTransfer = new DataTransfer();
+        dataTransfer.items.add(file);
+        input.files = dataTransfer.files;
+
+        stream.getTracks().forEach(track => track.stop());
+        modal.remove();
+
+        input.dispatchEvent(
+          new Event('change', { bubbles: true })
+        );
+      }, 'image/jpeg', 0.92);
+    };
+
+  } catch (error) {
+    alert('Camera access was denied or is unavailable.');
   }
+});
   return `
   <div class="card card-pad">
     <div class="section-title">Applicant details</div>
@@ -2167,11 +2275,42 @@ function renderWizardStep1(w){
     <div class="section-title">Document &amp; biometric upload</div>
     <div class="section-sub">Upload clear images of the identity document, a selfie for liveness matching, and an optional supporting document for cross-document verification.</div>
     <div class="upload-grid">
-      ${uploadBox('idFront','ID Document — Front','JPG, PNG or PDF up to 10MB','doc')}
-      ${uploadBox('idBack','ID Document — Back (optional)','JPG, PNG or PDF up to 10MB','doc')}
-      ${uploadBox('selfie','Selfie / Liveness Photo','Clear, front-facing photo','face')}
-      ${uploadBox('crossDoc','Cross-Document Verification','JPG, PNG or PDF up to 10MB','doc')}
-    </div>
+  ${uploadBox(
+    'idFront',
+    w.docType === 'Passport' ? 'Passport — Front' :
+    w.docType === 'Aadhaar Card' ? 'Aadhaar Card — Front' :
+    w.docType === 'Voter ID' ? 'Voter ID — Front' :
+    w.docType === 'PAN Card' ? 'PAN Card — Front' :
+    'ID Document — Front',
+    'JPG, PNG or PDF up to 10MB',
+    'doc'
+  )}
+
+  ${uploadBox(
+    'idBack',
+    w.docType === 'Passport' ? 'Passport — Back / Observation Page' :
+    w.docType === 'Aadhaar Card' ? 'Aadhaar Card — Back' :
+    w.docType === 'Voter ID' ? 'Voter ID — Back' :
+    w.docType === 'PAN Card' ? 'PAN Card — Back (optional)' :
+    'ID Document — Back (optional)',
+    'JPG, PNG or PDF up to 10MB',
+    'doc'
+  )}
+
+  ${uploadBox(
+    'selfie',
+    'Selfie / Liveness Photo',
+    'Clear, front-facing photo',
+    'face'
+  )}
+
+  ${uploadBox(
+    'crossDoc',
+    'Cross-Document Verification',
+    'JPG, PNG or PDF up to 10MB',
+    'doc'
+  )}
+</div>
   </div>
 
   <div class="flex justify-between" style="margin-top:20px;">
@@ -2330,7 +2469,10 @@ function attachWizardHandlers(){
       });
     });
     document.getElementById('wCountry').addEventListener('change', e=> w.applicant.country = e.target.value);
-    document.getElementById('wDocType').addEventListener('change', e=> w.docType = e.target.value);
+    document.getElementById('wDocType').addEventListener('change', e=>{
+  w.docType = e.target.value;
+  render();
+});
   }
   const nextBtn = document.getElementById('wizardNextBtn');
   if(nextBtn) nextBtn.addEventListener('click', startScreeningPipeline);
