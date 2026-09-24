@@ -327,7 +327,26 @@ async def verify_document(
     applicant_id_number: str | None = Form(None),
 
     applicant_address: str | None = Form(None),
-
+document_type: str | None = Form(None),
+passport_number: str | None = Form(None),
+nationality: str | None = Form(None),
+gender: str | None = Form(None),
+passport_expiry: str | None = Form(None),
+visa_number: str | None = Form(None),
+visa_type: str | None = Form(None),
+visa_entry_validation: str | None = Form(None),
+visa_stay_duration: str | None = Form(None),
+visa_expiry: str | None = Form(None),
+aadhaar_number: str | None = Form(None),
+voter_id_number: str | None = Form(None),
+voter_state: str | None = Form(None),
+pan_number: str | None = Form(None),
+pan_father_name: str | None = Form(None),
+dl_number: str | None = Form(None),
+dl_state: str | None = Form(None),
+dl_issue_date: str | None = Form(None),
+dl_valid_till: str | None = Form(None),
+dl_vehicle_class: str | None = Form(None),
     db: Session = Depends(get_db),
     role: Role = Depends(require_permission("screen")),
 ):
@@ -765,6 +784,28 @@ async def verify_document(
             anomaly_score=anomalies.get(
                 "anomaly_score"
             ),
+            verification_data={
+                "document_type": document_type,
+                "passport_number": passport_number,
+                "nationality": nationality,
+                "gender": gender,
+                "passport_expiry": passport_expiry,
+                "visa_number": visa_number,
+                "visa_type": visa_type,
+                "visa_entry_validation": visa_entry_validation,
+                "visa_stay_duration": visa_stay_duration,
+                "visa_expiry": visa_expiry,
+                "aadhaar_number": aadhaar_number,
+                "voter_id_number": voter_id_number,
+                "voter_state": voter_state,
+                "pan_number": pan_number,
+                "pan_father_name": pan_father_name,
+                "dl_number": dl_number,
+                "dl_state": dl_state,
+                "dl_issue_date": dl_issue_date,
+                "dl_valid_till": dl_valid_till,
+                "dl_vehicle_class": dl_vehicle_class,
+            },
         )
 
         db.add(screening)

@@ -670,7 +670,32 @@ async function runRealBackendScreening(w){
   formData.append('applicant_dob', w.applicant.dob || '');
   formData.append('applicant_id_number', w.applicant.idNumber || '');
   formData.append('applicant_address', '');
+formData.append('document_type', w.docType || '');
 
+formData.append('passport_number', w.applicant.passportNumber || '');
+formData.append('nationality', w.applicant.nationality || '');
+formData.append('gender', w.applicant.gender || '');
+formData.append('passport_expiry', w.applicant.passportExpiry || '');
+
+formData.append('visa_number', w.applicant.visaNumber || '');
+formData.append('visa_type', w.applicant.visaType || '');
+formData.append('visa_entry_validation', w.applicant.visaEntryValidation || '');
+formData.append('visa_stay_duration', w.applicant.visaStayDuration || '');
+formData.append('visa_expiry', w.applicant.visaExpiry || '');
+
+formData.append('aadhaar_number', w.applicant.aadhaarNumber || '');
+
+formData.append('voter_id_number', w.applicant.voterIdNumber || '');
+formData.append('voter_state', w.applicant.voterState || '');
+
+formData.append('pan_number', w.applicant.panNumber || '');
+formData.append('pan_father_name', w.applicant.panFatherName || '');
+
+formData.append('dl_number', w.applicant.dlNumber || '');
+formData.append('dl_state', w.applicant.dlState || '');
+formData.append('dl_issue_date', w.applicant.dlIssueDate || '');
+formData.append('dl_valid_till', w.applicant.dlValidTill || '');
+formData.append('dl_vehicle_class', w.applicant.dlVehicleClass || '');
   const response = await fetch(
   '/api/v1/verify/document',
     {

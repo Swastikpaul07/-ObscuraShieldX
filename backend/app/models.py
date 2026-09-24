@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import String, Integer, Float, DateTime, Text, ForeignKey
+from sqlalchemy import String, Integer, Float, DateTime, Text, ForeignKey, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .database import Base
 
@@ -18,6 +18,7 @@ class Screening(Base):
     ocr_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     face_similarity: Mapped[float | None] = mapped_column(Float, nullable=True)
     anomaly_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    verification_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
     flags: Mapped[list["RiskFlag"]] = relationship(
