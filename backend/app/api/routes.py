@@ -61,7 +61,7 @@ from ..utils.file_utils import (
     allowed_file,
     save_upload_file_tmp,
 )
-
+from ..services.authorized_source_service import authorized_source_service
 
 router = APIRouter()
 
@@ -687,7 +687,46 @@ dl_vehicle_class: str | None = Form(None),
                 "status": "unavailable",
                 "reason": str(exc),
             }
+        # ====================================================
+        # AUTHORIZED SOURCE VERIFICATION
+        # ====================================================
 
+        authorized_source = {
+            "provider": "DigiLocker",
+            "status": "NOT_CONFIGURED",
+            "verified": False,
+            "reference": None,
+            "message": (
+                "DigiLocker authorized-source verification is not "
+                "configured. No government-source verification was performed."
+            ),
+            "data": {},
+        }
+
+        try:
+            authorized_source = (
+                authorized_source_service.verify_document(
+                    document_type=document_type,
+                    document_number=applicant_id_number,
+                    name=applicant_name,
+                    dob=applicant_dob,
+                )
+            )
+        except Exception as exc:
+            # Authorized-source verification is optional.
+            # Never allow it to break the primary ShieldX pipeline.
+            authorized_source = {
+                "provider": "DigiLocker",
+                "status": "ERROR",
+                "verified": False,
+                "reference": None,
+                "message": (
+                    "Authorized-source verification was unavailable."
+                ),
+                "data": {
+                    "error": str(exc),
+                },
+            }
         # ====================================================
         # API RESULT
         # ====================================================
@@ -698,6 +737,8 @@ dl_vehicle_class: str | None = Form(None),
 
             "status": "completed",
 
+            "authorized_source": authorized_source,
+            
             "risk_score": risk[
                 "risk_score"
             ],
