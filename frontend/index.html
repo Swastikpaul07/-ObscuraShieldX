@@ -2638,6 +2638,18 @@ function finalizeWizardCase(status){
 function renderDashboard(){
   const perms = ROLE_PERMISSIONS[state.currentUser.role];
   const cases = state.cases;
+    // Normalize backend risk data before dashboard statistics/charts.
+  cases.forEach(c => {
+    const score = Number(c.riskScore);
+    if (Number.isFinite(score)) {
+      c.riskLevel =
+        score >= 70 ? 'High Risk' :
+        score >= 30 ? 'Suspicious' :
+        'Genuine';
+    } else if (!['Genuine','Suspicious','High Risk'].includes(c.riskLevel)) {
+      c.riskLevel = 'Genuine';
+    }
+  });
   const total = cases.length;
   const genuine = cases.filter(c=>c.riskLevel==='Genuine').length;
   const suspicious = cases.filter(c=>c.riskLevel==='Suspicious').length;
