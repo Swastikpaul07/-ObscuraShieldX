@@ -1210,6 +1210,18 @@ async function openCase(id){
     );
   }
 }
+function render(){
+  const app = document.getElementById('app');
+
+  if(!state.authed){
+    app.innerHTML = renderLogin();
+    attachLoginHandlers();
+    return;
+  }
+
+  app.innerHTML = renderShell();
+  attachShellHandlers();
+}
 
 /* =========================================================================
    LOGIN VIEW
