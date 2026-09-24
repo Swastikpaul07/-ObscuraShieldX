@@ -2251,6 +2251,33 @@ document.addEventListener('click', async (e) => {
     alert('Camera access was denied or is unavailable.');
   }
 });
+document.addEventListener('click', (e) => {
+  const fileBtn = e.target.closest('[data-file-selfie]');
+
+  if (fileBtn) {
+    e.preventDefault();
+
+    const input = document.querySelector('[data-file-input="selfie"]');
+
+    if (input) {
+      input.click();
+    }
+
+    return;
+  }
+
+  const uploadBox = e.target.closest('[data-upload]');
+
+  if (!uploadBox) return;
+
+  if (e.target.closest('button')) return;
+
+  const input = uploadBox.querySelector('[data-file-input]');
+
+  if (input) {
+    input.click();
+  }
+});
   return `
   <div class="card card-pad">
     <div class="section-title">Applicant details</div>
