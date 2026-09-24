@@ -456,7 +456,15 @@ const PERMISSION_LABELS = [
 ];
 
 /* ---------------------------- document / risk vocab ---------------------------- */
-const DOC_TYPES = ['Passport','Driver\u2019s License','Aadhaar Card','Voter ID','PAN Card','Residence Permit'];
+const DOC_TYPES = [
+  'Passport',
+  'Visa',
+  'Driver\u2019s License',
+  'Aadhaar Card',
+  'Voter ID',
+  'PAN Card',
+  'Residence Permit'
+];
 const NAMES = ['Rahul Mehta','Aisha Khan','Chen Wei','Maria Gomez','John Carter','Fatima Noor','David Kim','Olivia Brown','Ivan Petrov','Sara Ali','Grace Nakato','Tomás Rivera','Emily Chen','Noah Williams','Yuki Tanaka','Ahmed Hassan','Sofia Rossi','Liam O\u2019Connor','Nadia Osei','Mateus Silva'];
 const COUNTRIES = ['United States','India','United Kingdom','Canada','Germany','Brazil','Nigeria','Japan','UAE','Australia'];
 
@@ -2124,7 +2132,31 @@ const PIPELINE_STAGES = [
 function freshWizard(){
   return {
     step: 1,
-    applicant: { name:'', dob:'', idNumber:'', country: COUNTRIES[0] },
+    applicant: {
+  name:'',
+  dob:'',
+  idNumber:'',
+  country: COUNTRIES[0],
+  gender:'',
+  nationality:'',
+  passportNumber:'',
+  passportExpiry:'',
+  visaNumber:'',
+  visaType:'',
+  visaEntryValidation:'',
+  visaStayDuration:'',
+  visaExpiry:'',
+  aadhaarNumber:'',
+  voterIdNumber:'',
+  voterState:'',
+  panNumber:'',
+  panFatherName:'',
+  dlNumber:'',
+  dlState:'',
+  dlIssueDate:'',
+  dlValidTill:'',
+  dlVehicleClass:''
+},
     files: { idFront:null, idBack:null, selfie:null, crossDoc:null },
     stageIndex: -1,
     running: false,
@@ -2322,8 +2354,231 @@ document.addEventListener('click', (e) => {
     </div>
     <div class="field">
       <label class="field-label">Document type</label>
-      <select class="input" id="wDocType">${DOC_TYPES.map(d=>`<option ${d===(w.docType||DOC_TYPES[0])?'selected':''}>${d}</option>`).join('')}</select>
+      <select class="input" id="wDocType">
+        ${DOC_TYPES.map(d=>`<option ${d===(w.docType||DOC_TYPES[0])?'selected':''}>${d}</option>`).join('')}
+      </select>
     </div>
+
+    ${w.docType === 'Passport' ? `
+      <div class="section-title" style="margin-top:18px;">Passport Verification Details</div>
+
+      <div class="field-row">
+        <div class="field">
+          <label class="field-label">Passport Number</label>
+          <input class="input" id="wPassportNumber"
+            value="${esc(a.passportNumber)}"
+            placeholder="e.g. A1234567">
+        </div>
+
+        <div class="field">
+          <label class="field-label">Nationality</label>
+          <input class="input" id="wNationality"
+            value="${esc(a.nationality)}"
+            placeholder="e.g. Indian">
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label class="field-label">Gender</label>
+          <select class="input" id="wGender">
+            <option value="">Select gender</option>
+            <option value="Male" ${a.gender==='Male'?'selected':''}>Male</option>
+            <option value="Female" ${a.gender==='Female'?'selected':''}>Female</option>
+            <option value="Other" ${a.gender==='Other'?'selected':''}>Other</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label class="field-label">Passport Expiry Date</label>
+          <input class="input" id="wPassportExpiry"
+            type="date"
+            value="${esc(a.passportExpiry)}">
+        </div>
+      </div>
+    ` : ''}
+
+    ${w.docType === 'Visa' ? `
+      <div class="section-title" style="margin-top:18px;">Visa Verification Details</div>
+
+      <div class="field-row">
+        <div class="field">
+          <label class="field-label">Visa Number</label>
+          <input class="input" id="wVisaNumber"
+            value="${esc(a.visaNumber)}"
+            placeholder="Visa number">
+        </div>
+
+        <div class="field">
+          <label class="field-label">Visa Type</label>
+          <input class="input" id="wVisaType"
+            value="${esc(a.visaType)}"
+            placeholder="e.g. Tourist / Business">
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label class="field-label">Entry Validation</label>
+          <select class="input" id="wVisaEntryValidation">
+            <option value="">Select validation</option>
+            <option value="Valid" ${a.visaEntryValidation==='Valid'?'selected':''}>Valid</option>
+            <option value="Invalid" ${a.visaEntryValidation==='Invalid'?'selected':''}>Invalid</option>
+            <option value="Not Verified" ${a.visaEntryValidation==='Not Verified'?'selected':''}>Not Verified</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label class="field-label">Stay Duration</label>
+          <input class="input" id="wVisaStayDuration"
+            value="${esc(a.visaStayDuration)}"
+            placeholder="e.g. 90 days">
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="field-label">Visa Expiry Date</label>
+        <input class="input" id="wVisaExpiry"
+          type="date"
+          value="${esc(a.visaExpiry)}">
+      </div>
+    ` : ''}
+
+    ${w.docType === 'Aadhaar Card' ? `
+      <div class="section-title" style="margin-top:18px;">Aadhaar Verification Details</div>
+
+      <div class="field-row">
+        <div class="field">
+          <label class="field-label">Aadhaar Number</label>
+          <input class="input" id="wAadhaarNumber"
+            value="${esc(a.aadhaarNumber)}"
+            placeholder="12-digit Aadhaar number">
+        </div>
+
+        <div class="field">
+          <label class="field-label">Gender</label>
+          <select class="input" id="wGender">
+            <option value="">Select gender</option>
+            <option value="Male" ${a.gender==='Male'?'selected':''}>Male</option>
+            <option value="Female" ${a.gender==='Female'?'selected':''}>Female</option>
+            <option value="Other" ${a.gender==='Other'?'selected':''}>Other</option>
+          </select>
+        </div>
+      </div>
+    ` : ''}
+
+    ${w.docType === 'Voter ID' ? `
+      <div class="section-title" style="margin-top:18px;">Voter ID Verification Details</div>
+
+      <div class="field-row">
+        <div class="field">
+          <label class="field-label">EPIC / Voter ID Number</label>
+          <input class="input" id="wVoterIdNumber"
+            value="${esc(a.voterIdNumber)}"
+            placeholder="EPIC number">
+        </div>
+
+        <div class="field">
+          <label class="field-label">State / Constituency</label>
+          <input class="input" id="wVoterState"
+            value="${esc(a.voterState)}"
+            placeholder="State / constituency">
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="field-label">Gender</label>
+        <select class="input" id="wGender">
+          <option value="">Select gender</option>
+          <option value="Male" ${a.gender==='Male'?'selected':''}>Male</option>
+          <option value="Female" ${a.gender==='Female'?'selected':''}>Female</option>
+          <option value="Other" ${a.gender==='Other'?'selected':''}>Other</option>
+        </select>
+      </div>
+    ` : ''}
+
+    ${w.docType === 'PAN Card' ? `
+      <div class="section-title" style="margin-top:18px;">PAN Verification Details</div>
+
+      <div class="field-row">
+        <div class="field">
+          <label class="field-label">PAN Number</label>
+          <input class="input" id="wPanNumber"
+            value="${esc(a.panNumber)}"
+            placeholder="ABCDE1234F">
+        </div>
+
+        <div class="field">
+          <label class="field-label">Father's Name</label>
+          <input class="input" id="wPanFatherName"
+            value="${esc(a.panFatherName)}"
+            placeholder="Father's name">
+        </div>
+      </div>
+    ` : ''}
+
+    ${w.docType === 'Driver\u2019s License' ? `
+      <div class="section-title" style="margin-top:18px;">Indian Driving Licence Verification Details</div>
+
+      <div class="field-row">
+        <div class="field">
+          <label class="field-label">Driving Licence Number</label>
+          <input class="input" id="wDlNumber"
+            value="${esc(a.dlNumber)}"
+            placeholder="DL number">
+        </div>
+
+        <div class="field">
+          <label class="field-label">Issuing State</label>
+          <input class="input" id="wDlState"
+            value="${esc(a.dlState)}"
+            placeholder="e.g. West Bengal">
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label class="field-label">Issue Date</label>
+          <input class="input" id="wDlIssueDate"
+            type="date"
+            value="${esc(a.dlIssueDate)}">
+        </div>
+
+        <div class="field">
+          <label class="field-label">Valid Till</label>
+          <input class="input" id="wDlValidTill"
+            type="date"
+            value="${esc(a.dlValidTill)}">
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="field-label">Vehicle Class</label>
+        <input class="input" id="wDlVehicleClass"
+          value="${esc(a.dlVehicleClass)}"
+          placeholder="e.g. LMV / MCWG">
+      </div>
+    ` : ''}
+
+    ${w.docType === 'Residence Permit' ? `
+      <div class="section-title" style="margin-top:18px;">Residence Permit Verification Details</div>
+
+      <div class="field-row">
+        <div class="field">
+          <label class="field-label">Permit Number</label>
+          <input class="input" id="wIdNumber"
+            value="${esc(a.idNumber)}"
+            placeholder="Permit number">
+        </div>
+
+        <div class="field">
+          <label class="field-label">Nationality</label>
+          <input class="input" id="wNationality"
+            value="${esc(a.nationality)}"
+            placeholder="Nationality">
+        </div>
+      </div>
+    ` : ''}
   </div>
 
   <div class="card card-pad" style="margin-top:16px;">
@@ -2530,7 +2785,54 @@ function attachWizardHandlers(){
 });
   }
   const nextBtn = document.getElementById('wizardNextBtn');
-  if(nextBtn) nextBtn.addEventListener('click', startScreeningPipeline);
+  if(nextBtn) nextBtn.addEventListener('click', () => {
+  const a = state.wizard.applicant;
+
+  const getValue = (id) => {
+    const el = document.getElementById(id);
+    return el ? el.value.trim() : '';
+  };
+
+  // Common fields
+  a.name = getValue('wName');
+  a.dob = getValue('wDob');
+  a.idNumber = getValue('wIdNumber');
+  a.country = getValue('wCountry');
+
+  // Passport
+  a.passportNumber = getValue('wPassportNumber');
+  a.nationality = getValue('wNationality');
+  a.gender = getValue('wGender');
+  a.passportExpiry = getValue('wPassportExpiry');
+
+  // Visa
+  a.visaNumber = getValue('wVisaNumber');
+  a.visaType = getValue('wVisaType');
+  a.visaEntryValidation = getValue('wVisaEntryValidation');
+  a.visaStayDuration = getValue('wVisaStayDuration');
+  a.visaExpiry = getValue('wVisaExpiry');
+
+  // Aadhaar
+  a.aadhaarNumber = getValue('wAadhaarNumber');
+
+  // Voter ID
+  a.voterIdNumber = getValue('wVoterIdNumber');
+  a.voterState = getValue('wVoterState');
+
+  // PAN
+  a.panNumber = getValue('wPanNumber');
+  a.panFatherName = getValue('wPanFatherName');
+
+  // Indian Driving Licence
+  a.dlNumber = getValue('wDlNumber');
+  a.dlState = getValue('wDlState');
+  a.dlIssueDate = getValue('wDlIssueDate');
+  a.dlValidTill = getValue('wDlValidTill');
+  a.dlVehicleClass = getValue('wDlVehicleClass');
+
+  // Continue with the existing screening pipeline
+  startScreeningPipeline();
+});
 
   const approve = document.getElementById('wizardApprove');
   const escalate = document.getElementById('wizardEscalate');
