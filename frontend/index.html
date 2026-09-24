@@ -1082,117 +1082,133 @@ function navigate(view, params){
   render();
 }
 async function openCase(id){
+  const existingCase = state.cases.find(c => c.id === id);
+
+  if(!existingCase){
+    toast('Case not found.', 'err');
+    return;
+  }
+
   try{
+    /*
+     * Demo / legacy cases (SX-xxxx) already contain
+     * their complete frontend analysis data.
+     * Do NOT send them to the backend.
+     */
+    const isBackendCase =
+      typeof id === 'string' &&
+      !id.startsWith('SX-');
+
+    if(!isBackendCase){
+      navigate('case-detail', { caseId:id });
+      return;
+    }
+
+    /*
+     * Real backend screening:
+     * fetch the latest details from PostgreSQL/FastAPI.
+     */
     const response = await shieldxFetch(
       `/api/v1/screenings/${encodeURIComponent(id)}`
     );
 
     if(!response.ok){
       const errorData = await response.json().catch(()=>({}));
+
       throw new Error(
-        errorData.detail || `Failed to load case (${response.status})`
+        errorData.detail ||
+        `Failed to load case (${response.status})`
       );
     }
 
     const detail = await response.json();
 
-    const existingCase = state.cases.find(c => c.id === id);
+    existingCase.backendDetail = detail;
 
-    if(existingCase){
-      existingCase.backendDetail = detail;
+    existingCase.riskScore = detail.risk_score;
 
-      existingCase.riskScore = detail.risk_score;
-      existingCase.riskLevel =
-        detail.risk_score >= 70 ? 'High Risk' :
-        detail.risk_score >= 30 ? 'Suspicious' :
-        'Genuine';
+    existingCase.riskLevel =
+      detail.risk_score >= 70 ? 'High Risk' :
+      detail.risk_score >= 30 ? 'Suspicious' :
+      'Genuine';
 
-      const backendForUi = {
-  ...detail,
+    const backendForUi = {
+      ...detail,
 
-  request_id: detail.request_id,
+      request_id: detail.request_id,
+      risk_score: detail.risk_score,
+      classification: detail.classification,
 
-  risk_score: detail.risk_score,
+      document: {
+        ocr_confidence: detail.ocr_confidence,
+        extracted_fields: detail.extracted_fields || {},
+        raw_text: detail.raw_text || ''
+      },
 
-  classification: detail.classification,
+      face_verification: {
+        performed:
+          detail.face_similarity !== null &&
+          detail.face_similarity !== undefined,
 
-  document: {
-    ocr_confidence: detail.ocr_confidence,
-    extracted_fields: detail.extracted_fields || {},
-    raw_text: detail.raw_text || ''
-  },
+        similarity: detail.face_similarity,
 
-  face_verification: {
-    performed:
-      detail.face_similarity !== null &&
-      detail.face_similarity !== undefined,
+        notes:
+          detail.face_similarity !== null &&
+          detail.face_similarity !== undefined
+            ? 'Face verification result received from backend.'
+            : 'Selfie not provided.'
+      },
 
-    similarity: detail.face_similarity,
+      anomalies:
+        detail.risk_flags ||
+        detail.anomalies ||
+        [],
 
-    notes:
-      detail.face_similarity !== null &&
-      detail.face_similarity !== undefined
-        ? 'Face verification result received from backend.'
-        : 'Selfie not provided.'
-  },
-
-  anomalies:
-    detail.risk_flags ||
-    detail.anomalies ||
-    [],
-
-  cross_document:
-    detail.cross_document || {
-      performed: false,
-      score: null,
-      classification: 'Not Submitted',
-      matches: [],
-      mismatches: [],
-      unavailable: []
-    }
-};
-
-existingCase.analysis = adaptBackendResultToUi(
-  backendForUi,
-  {
-    applicant: existingCase.applicant || {},
-    docType: existingCase.docType || 'Identity Document',
-    files: {}
-  }
-);
-
-      existingCase.auditTrail = [
-        {
-          time: new Date(detail.created_at),
-          actor: 'ShieldX Engine',
-          role: 'System',
-          action: 'Screening Completed',
-          note: `Backend screening completed with risk score ${detail.risk_score}.`
+      cross_document:
+        detail.cross_document || {
+          performed: false,
+          score: null,
+          classification: 'Not Submitted',
+          matches: [],
+          mismatches: [],
+          unavailable: []
         }
-      ];
-    }
+    };
+
+    existingCase.analysis = adaptBackendResultToUi(
+      backendForUi,
+      {
+        applicant: existingCase.applicant || {},
+        docType: existingCase.docType || 'Identity Document',
+        files: {}
+      }
+    );
+
+    existingCase.auditTrail = [
+      {
+        time: new Date(detail.created_at),
+        actor: 'ShieldX Engine',
+        role: 'System',
+        action: 'Screening Completed',
+        note:
+          `Backend screening completed with risk score ${detail.risk_score}.`
+      }
+    ];
 
     navigate('case-detail', { caseId:id });
 
   }catch(error){
-    console.error('ShieldX case detail loading failed:', error);
+    console.error(
+      'ShieldX case detail loading failed:',
+      error
+    );
 
     toast(
-      error.message || 'Unable to load case details from backend.',
+      error.message ||
+      'Unable to load case details from backend.',
       'err'
     );
   }
-}
-
-function render(){
-  const app = document.getElementById('app');
-  if(!state.authed){
-    app.innerHTML = renderLogin();
-    attachLoginHandlers();
-    return;
-  }
-  app.innerHTML = renderShell();
-  attachShellHandlers();
 }
 
 /* =========================================================================
